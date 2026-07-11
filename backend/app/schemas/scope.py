@@ -1,12 +1,12 @@
 from pydantic import BaseModel
 
-
-class ScopeUpdateRequest(BaseModel):
-    level: str  # "world" | "continent" (country/state land in a later milestone)
-    id: str  # e.g. "world", "europe"
+from app.schemas.panel import PanelConfig
 
 
-class ScopeResponse(BaseModel):
-    level: str
+class ContinentInfo(BaseModel):
     id: str
     label: str
+
+
+class ScopeConfigResponse(BaseModel):
+    scopeConfig: PanelConfig

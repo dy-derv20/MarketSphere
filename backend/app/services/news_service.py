@@ -1,52 +1,21 @@
-import asyncio
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
-import httpx
-
-from app.services.cache import TTLCache
-
-GDELT_URL = "https://api.gdeltproject.org/api/v2/doc/doc"
-_cache = TTLCache(ttl_seconds=300)
+from app.models.news_article import NewsArticle
+from app.services.ingestion.geo_tagging import FIPS_TO_ISO2
 
 
-async def _fetch_articles(params: dict) -> list[dict]:
-    for attempt in range(2):
-        try:
-            async with httpx.AsyncClient(timeout=10) as client:
-                response = await client.get(GDELT_URL, params=params)
-            return response.json().get("articles", [])
-        except Exception:
-            if attempt == 0:
-                await asyncio.sleep(2)
-    return []
-
-
-async def get_world_news() -> list[dict]:
-    cached = _cache.get("world")
-    if cached is not None:
-        return cached
-
-    params = {
-        "query": "(economy OR markets OR stocks OR finance)",
-        "mode": "ArtList",
-        "format": "json",
-        "timespan": "24h",
-        "maxrecords": "20",
-        "sort": "DateDesc",
-    }
-
-    articles = await _fetch_articles(params)
-
-    normalized = [
-        {
-            "title": a.get("title", ""),
-            "url": a.get("url", ""),
-            "domain": a.get("domain", ""),
-            "published_at": a.get("seendate", ""),
-            "language": a.get("language", ""),
-            "source_country": a.get("sourcecountry", ""),
-        }
-        for a in articles
-    ]
-
-    _cache.set("world", normalized)
-    return normalized
+async def get_news(
+    db: AsyncSession,
+    continent: str | None = None,
+    country: str | None = None,
+    limit: int = 40,
+) -> list[NewsArticle]:
+    stmt = select(NewsArticle).order_by(NewsArticle.published_at.desc()).limit(limit)
+    if continent:
+        stmt = stmt.where(NewsArticle.continent == continent)
+    if country:
+        iso2 = FIPS_TO_ISO2.get(country.upper(), country.upper())
+        stmt = stmt.where(NewsArticle.country == iso2)
+    result = await db.execute(stmt)
+    return list(result.scalars().all())

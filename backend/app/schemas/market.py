@@ -10,11 +10,6 @@ class OHLCVPoint(BaseModel):
     volume: int
 
 
-class MarketSeries(BaseModel):
-    symbol: str
-    label: str
-    ohlcv: list[OHLCVPoint]
-
-
 class MarketResponse(BaseModel):
-    series: list[MarketSeries]
+    symbol: str
+    ohlcv: list[OHLCVPoint]
