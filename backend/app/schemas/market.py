@@ -1,9 +1,20 @@
 from pydantic import BaseModel
 
 
+class OHLCVPoint(BaseModel):
+    date: str
+    open: float
+    high: float
+    low: float
+    close: float
+    volume: int
+
+
 class MarketSeries(BaseModel):
-    pass
+    symbol: str
+    label: str
+    ohlcv: list[OHLCVPoint]
 
 
 class MarketResponse(BaseModel):
-    pass
+    series: list[MarketSeries]

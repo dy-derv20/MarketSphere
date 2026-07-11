@@ -5,6 +5,8 @@ from app.api.deps import get_current_session
 from app.db.session import get_db
 from app.models.session import Session as SessionModel
 from app.schemas.scope import ScopeResponse, ScopeUpdateRequest
+from app.services.market_service import get_world_market_data
+from app.services.news_service import get_world_news
 from app.services.scope_service import validate_scope
 
 router = APIRouter(prefix="/scope", tags=["scope"])
@@ -22,6 +24,8 @@ async def update_scope(
         raise HTTPException(status_code=400, detail=str(exc))
 
     session.current_scope = {"level": body.level, "id": body.id, "label": label}
+    session.current_news_snapshot = {"articles": await get_world_news()}
+    session.current_market_snapshot = {"series": await get_world_market_data()}
     await db.commit()
     return ScopeResponse(level=body.level, id=body.id, label=label)
 

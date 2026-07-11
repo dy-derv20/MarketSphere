@@ -1,9 +1,13 @@
+from datetime import datetime
+
 from pydantic import BaseModel
 
 
 class ChatRequest(BaseModel):
-    pass
+    message: str
 
 
 class ChatResponse(BaseModel):
-    pass
+    role: str
+    content: str
+    created_at: datetime

@@ -2,8 +2,13 @@ from pydantic import BaseModel
 
 
 class NewsItem(BaseModel):
-    pass
+    title: str
+    url: str
+    domain: str
+    published_at: str
+    language: str
+    source_country: str
 
 
 class NewsResponse(BaseModel):
-    pass
+    articles: list[NewsItem]
