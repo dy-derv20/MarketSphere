@@ -1,0 +1,46 @@
+"use client";
+
+import { motion } from "framer-motion";
+import type { ContinentId } from "@/types/globe";
+import { CONTINENT_TRANSITION_MS } from "@/lib/transitionTiming";
+import MarketSection from "@/components/panel/MarketSection";
+import NewsSection from "@/components/panel/NewsSection";
+
+const PANEL_WIDTH = 300;
+
+interface PanelListProps {
+  continentId: ContinentId;
+}
+
+export default function PanelList({ continentId }: PanelListProps) {
+  return (
+    // Outer element animates *width* (not a transform) from 0 -> PANEL_WIDTH,
+    // matching CONTINENT_TRANSITION_MS. Because this is a real flex sibling
+    // of the globe pane (not absolutely positioned), the globe pane reflows
+    // to fill the remaining space every frame via native flexbox — one
+    // animated value drives both panes' sizing, no manual sync needed.
+    <motion.aside
+      initial={{ width: 0 }}
+      animate={{ width: PANEL_WIDTH }}
+      exit={{ width: 0 }}
+      transition={{ duration: CONTINENT_TRANSITION_MS / 1000, ease: [0.22, 1, 0.36, 1] }}
+      className="h-full shrink-0 overflow-hidden bg-[#0d1219]"
+    >
+      {/* Fixed-width inner content: doesn't reflow as the outer width grows,
+          it's simply revealed as the outer's overflow-hidden clip widens. */}
+      <motion.div
+        initial={{ opacity: 0, x: 24 }}
+        animate={{ opacity: 1, x: 0 }}
+        exit={{ opacity: 0, x: 24 }}
+        transition={{ duration: 0.5, ease: "easeOut", delay: CONTINENT_TRANSITION_MS / 1000 / 2 }}
+        style={{ width: PANEL_WIDTH }}
+        className="h-full overflow-y-auto px-4 py-6"
+      >
+        <div className="flex flex-col gap-6">
+          <MarketSection continentId={continentId} />
+          <NewsSection continentId={continentId} />
+        </div>
+      </motion.div>
+    </motion.aside>
+  );
+}
