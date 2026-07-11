@@ -1,3 +1,5 @@
+from app.schemas.panel import MarketParams, NewsParams, Panel, PanelConfig, PanelType, new_panel_id
+
 CONTINENTS = {
     "africa": "Africa",
     "asia": "Asia",
@@ -20,12 +22,70 @@ REGIONS = [
     {"region": "Australia (ASX 200)", "country_fips": "AS", "yf_ticker": "^AXJO", "tv_symbol": "ASX:XJO"},
 ]
 
+FIPS_LABELS = {
+    "US": "United States", "FR": "France", "GM": "Germany", "UK": "United Kingdom",
+    "JA": "Japan", "HK": "Hong Kong", "BR": "Brazil", "CA": "Canada", "AS": "Australia",
+}
 
-def validate_scope(level: str, id: str) -> str:
-    if level == "world" and id == "world":
-        return "World"
-    if level == "continent":
-        if id not in CONTINENTS:
-            raise ValueError(f"Unknown continent id: {id}")
-        return CONTINENTS[id]
-    raise ValueError(f"Unsupported scope level: {level}")
+# Which registry entries belong to each continent. None = the borderless Europe (Euro Stoxx 50)
+# entry. Continents with no registry coverage yet (e.g. Africa) resolve to an empty panel list —
+# graceful degradation, not an error, consistent with the rest of the build.
+CONTINENT_FIPS_MAP = {
+    "europe": [None, "FR", "GM", "UK"],
+    "asia": ["JA", "HK"],
+    "north-america": ["US", "CA"],
+    "south-america": ["BR"],
+    "oceania": ["AS"],
+    "africa": [],
+}
+
+
+def build_scope_config(level: str, region_id: str) -> PanelConfig:
+    continent_panel: Panel | None = None
+    if level == "world":
+        matched_regions = REGIONS
+        news_countries: list[str | None] = [None]
+    elif level == "continent":
+        if region_id not in CONTINENTS:
+            raise ValueError(f"Unknown continent id: {region_id}")
+        fips_list = CONTINENT_FIPS_MAP.get(region_id, [])
+        matched_regions = [r for r in REGIONS if r["country_fips"] in fips_list]
+        news_countries = [f for f in fips_list if f is not None]
+        # Articles are tagged with continent directly at ingestion time, so this panel
+        # covers the whole continent regardless of CONTINENT_FIPS_MAP coverage - it's
+        # what keeps continents with no curated market index (e.g. Africa) from getting
+        # zero news panels.
+        continent_panel = Panel(
+            id=new_panel_id(),
+            type=PanelType.news,
+            title=f"{CONTINENTS[region_id]} News",
+            rationale="Default news panel for this scope.",
+            params=NewsParams(continent=region_id).model_dump(),
+        )
+    else:
+        raise ValueError(f"Unsupported scope level: {level}")
+
+    panels = [
+        Panel(
+            id=new_panel_id(),
+            type=PanelType.news,
+            title="World News" if fips is None else f"{FIPS_LABELS[fips]} News",
+            rationale="Default news panel for this scope.",
+            params=NewsParams(country=fips).model_dump(),
+        )
+        for fips in news_countries
+    ]
+    if continent_panel is not None:
+        panels.insert(0, continent_panel)
+    panels += [
+        Panel(
+            id=new_panel_id(),
+            type=PanelType.market,
+            title=region["region"],
+            rationale="Representative index for this scope.",
+            params=MarketParams(symbol=region["yf_ticker"]).model_dump(),
+        )
+        for region in matched_regions
+    ]
+
+    return PanelConfig(panels=panels)

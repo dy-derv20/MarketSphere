@@ -6,13 +6,14 @@ FastAPI service backing the MarketSphere globe UI. This doc is kept in sync as t
 
 ```
 cd backend
+docker compose up -d          # Postgres, matches .env.example out of the box
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-cp .env.example .env   # fill in DATABASE_URL, GEMINI_API_KEY, NEWS_API_KEY, MARKET_API_KEY
+cp .env.example .env          # fill in GEMINI_API_KEY at minimum; DATABASE_URL already matches docker-compose.yml
 uvicorn app.main:app --reload --port 8000
 ```
 
-Base URL (local): `http://localhost:8000`. Every route is under `/api`.
+Base URL (local): `http://localhost:8000`. Every route is under `/api`. Interactive docs (always accurate, auto-generated from the code) at `http://localhost:8000/docs` — useful as a live supplement to this file.
 
 ## Session model (reload persistence)
 
@@ -66,6 +67,20 @@ Response `200`: `{ "level": "continent", "id": "europe", "label": "Europe" }`. `
 
 ### `GET /api/scope/{session_id}`
 Returns the session's current scope (same shape as above), or `null` if none set yet.
+
+### `GET /api/scope/continents`
+No params. Returns the 6 valid continent ids/labels for `PUT /api/scope` (`level: "continent"`):
+```json
+[
+  { "id": "africa", "label": "Africa" },
+  { "id": "asia", "label": "Asia" },
+  { "id": "europe", "label": "Europe" },
+  { "id": "north-america", "label": "North America" },
+  { "id": "oceania", "label": "Oceania" },
+  { "id": "south-america", "label": "South America" }
+]
+```
+Use this instead of hardcoding continent ids on the frontend — it's the same source `PUT /api/scope` validates against.
 
 ### `GET /api/regions`
 No params. Returns the full curated region registry:
