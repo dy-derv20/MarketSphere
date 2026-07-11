@@ -1,7 +1,7 @@
-// Mirrors backend/API.md response shapes exactly. Only the endpoints this
-// session actually consumes (session, scope, regions, news, market) are
-// typed here — chat/perspective are documented in API.md but intentionally
-// out of scope for this integration pass (see CLAUDE.md Phase D).
+// Mirrors backend/API.md response shapes exactly. Endpoints consumed so
+// far: session, scope, regions, news, market (Phase D), chat (Phase E).
+// /api/perspective is documented in API.md but intentionally not wired up
+// yet — see CLAUDE.md.
 
 export type ScopeLevel = "world" | "continent";
 

@@ -2,9 +2,9 @@
 
 12-hour hackathon project. This file documents **my slice**: the entire
 frontend experience — the interactive 3D globe, its hover/click navigation,
-the market/news dashboard panel, and its wiring to the real backend.
-Backend implementation itself is a teammate's scope; this file tracks *my*
-integration work against it.
+the market/news dashboard panel, its wiring to the real backend, and the
+Gemini-backed chat assistant UI. Backend implementation itself is a
+teammate's scope; this file tracks *my* integration work against it.
 
 ## Repo Layout
 
@@ -32,17 +32,23 @@ all frontend commands from inside `frontend/`, not the repo root.
     │   │   ├── TitleBar.tsx         — dark chrome bar, dashboard/transition only
     │   │   ├── globe/               — LandingGlobe (globe + hover/click/label/
     │   │   │                          camera + container-resize logic)
-    │   │   └── panel/               — PanelList, MarketSection, NewsSection,
-    │   │                              TradingViewMiniWidget, NewsRow, SectionState
+    │   │   ├── panel/               — PanelList, MarketSection, MarketChart
+    │   │   │                          (Phase F, own chart), NewsSection,
+    │   │   │                          TradingViewMiniWidget (now unused —
+    │   │   │                          kept only as the documented §6
+    │   │   │                          fallback), NewsRow, SectionState
+    │   │   └── chat/                — FloatingChat (Phase E assistant UI)
     │   ├── lib/
     │   │   ├── api/                 — typed API client: http.ts (shared fetch
     │   │   │                          wrapper), session.ts, scope.ts, regions.ts,
-    │   │   │                          news.ts, market.ts, regionsByContinent.ts
+    │   │   │                          news.ts, market.ts, chat.ts, regionsByContinent.ts
     │   │   ├── data/                — countries-110m.json only now; markets.ts/
     │   │   │                          news.ts (Phase C mocks) were deleted once
     │   │   │                          nothing imported them anymore
     │   │   ├── useAppSession.ts     — session create/restore + localStorage
     │   │   ├── useRegions.ts        — fetches /api/regions once, reused per continent
+    │   │   ├── useMarket.ts         — fetches /api/market once (Phase F), reused
+    │   │   │                          per continent, same pattern as useRegions
     │   │   ├── useNews.ts           — fetches /api/news, adapts to NewsArticle shape
     │   │   ├── parseGdeltTimestamp.ts
     │   │   ├── formatRelativeTime.ts
@@ -81,17 +87,42 @@ cd backend
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 ```
-Then create `backend/.env`:
+`.env` currently in place uses the literal `user`/`password` credentials
+from `.env.example` (not my own local trust-auth setup from earlier in this
+project) — a Postgres role matching those credentials was created locally
+and granted table/sequence/default privileges on the `marketsphere` DB, so
+the file works exactly as given rather than needing to be edited:
+```sql
+CREATE ROLE "user" WITH LOGIN PASSWORD 'password';
+GRANT ALL PRIVILEGES ON DATABASE marketsphere TO "user";
+GRANT ALL ON SCHEMA public TO "user";
+GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO "user";
+GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO "user";
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO "user";
 ```
-DATABASE_URL=postgresql+asyncpg://<your-macos-username>@localhost:5432/marketsphere
-GEMINI_API_KEY=<a real key — chat/perspective 503 without one, fine for now>
-NEWS_API_KEY=
-MARKET_API_KEY=
-CORS_ORIGINS=http://localhost:3000
-```
+**`CORS_ORIGINS` must not have a trailing slash** (`http://localhost:3000`,
+not `.../3000/`) — a trailing slash silently breaks every frontend request:
+`Access-Control-Allow-Origin` just doesn't match and the browser blocks the
+response. Caught this by testing an actual cross-origin request, not just
+`/api/health`, which doesn't care about CORS. Note `uvicorn --reload` only
+watches `.py` files — editing `.env` needs a manual process restart to
+take effect, it will not hot-reload.
+
 Run with `uvicorn app.main:app --reload --port 8000`. Tables are created
 automatically on startup (`Base.metadata.create_all`) — no separate
-migration step. Verify with `curl localhost:8000/api/health`.
+migration step. Verify with `curl localhost:8000/api/health`, but also
+verify an actual cross-origin request (`curl -i -X GET
+localhost:8000/api/health -H "Origin: http://localhost:3000"` and check
+for the `access-control-allow-origin` response header) — `/api/health`
+alone will pass even with CORS totally broken.
+
+**Gemini free-tier quota: 20 requests/day, hard daily cap** (confirmed via
+the `quotaId: GenerateRequestsPerDayPerProjectPerModel-FreeTier` in the
+429 response body — not a short burst-rate limit, waiting ~60s does not
+reliably help). Budget real `/api/chat` testing accordingly. When
+exhausted, Gemini returns `google.genai.errors.ClientError` (429) — see
+Phase E's note below on why this currently surfaces to the frontend as a
+misleading CORS error rather than the clean 503 `API.md` documents.
 
 ## Project Vision
 
@@ -107,18 +138,22 @@ after a continent is selected.
 ## My Scope
 
 Full frontend: globe navigation (Phases A/B, done), camera/dashboard
-transition (Phase C, done), backend integration (Phase D, done). Chat/AI
-assistant UI is a future phase — `/api/chat` and `/api/perspective` exist
-backend-side already, but no client functions or UI were built for them
-this session (kept the API client scoped to exactly the six endpoints
-actually consumed: createSession, getSession, setScope, getRegions,
-getNews, getMarket).
+transition (Phase C, done), backend integration (Phase D, done), chat
+assistant UI (Phase E, UI done), Market panel own-chart upgrade (Phase F,
+done). `/api/perspective` still has no client function or UI — genuinely
+deferred, not needed by anything built so far.
 
 ### Explicitly Out of Scope
 Backend implementation itself, auth, databases (all teammate's scope).
-Chat/AI assistant UI (Phase E). Country/state-level scope selection (not
-yet supported by the backend). Client-side workarounds for the news/market
+`/api/perspective` UI. Country/state-level scope selection (not yet
+supported by the backend). Client-side workarounds for the news/market
 world-scope-only gap or the Africa regions gap (see "Known limitations").
+Chat message persistence beyond component state, and wiring chat content
+to PanelList navigation/highlighting — both explicitly future work. The
+tone/divergence overlay described in `FRONTEND_MARKET_PANEL.md` §5 — the
+backend's `/api/news` doesn't return `tone_timeline` yet (only
+`articles[]`), so there's no live data to feed it; deliberately deferred
+rather than built against a field that doesn't exist (see Phase F notes).
 
 ## Build Phases
 
@@ -181,9 +216,117 @@ and preserves orientation throughout.
   **Worth remembering: test against `next build && next start` occasionally,
   not just `next dev` — they can genuinely behave differently.**
 
-### Phase E (future) — AI Assistant panel
-`/api/chat` and `/api/perspective` already exist backend-side. Building
-the UI to consume them is future work, not this phase.
+### Phase E — AI Assistant panel [UI DONE]
+- `FloatingChat` (`components/chat/`): a circular trigger fixed
+  bottom-left, visible in every `ViewMode`, rendered once in `AppShell`
+  alongside the globe/panel — not gated by `showDashboardChrome`.
+  Expands into a chat panel via a Framer Motion shared `layoutId`
+  (`"chat-shell"`) between the trigger button and the panel container, so
+  the circle visually morphs into the panel rather than a fade/slide
+  swap. Deliberately distinct from the Market/News cream-card look —
+  stays entirely within the dark/teal palette (no new hues), with a
+  breathing glow ring on the trigger, a live-status pulse dot in the
+  header, bouncing-dot typing indicator (not a spinner), and message
+  bubbles distinguished by alignment + a teal vs. neutral tint rather
+  than by introducing the light-card treatment.
+- `lib/api/chat.ts` — `sendChatMessage(sessionId, message)`, one function
+  matching the existing per-endpoint convention, hits
+  `POST /api/chat/{session_id}` with `{ message }`, typed via the
+  `ChatMessage` shape already in `types/api.ts` (it already matched
+  `API.md`'s documented response exactly, so no new type was needed).
+- Send flow: optimistic user-message render → `sendChatMessage` →
+  append the reply, or render an inline error bubble (styled like
+  `SectionState`'s `ErrorState`, not a toast/`alert()`) on failure. No
+  retry logic, no persistence beyond component state — `FloatingChat`
+  stays mounted for the page's lifetime, so history survives `isOpen`
+  toggling and `ViewMode` changes, but not a hard refresh.
+- `next.config.ts` now sets `devIndicators.position: "bottom-right"` —
+  Next's own dev-mode indicator defaults to bottom-left and was
+  physically colliding with the new trigger button (confirmed via a
+  failed Playwright click before tracing it to `<nextjs-portal>`
+  intercepting pointer events). Dev-only, no effect on production builds.
+- **Backend bug found during verification, not fixed here (out of
+  frontend scope) — see `backend/app/api/routes/chat.py`:** it only
+  catches `google.genai.errors.ServerError` and converts it to the
+  documented 503. Gemini's rate-limit response is a different exception
+  type, `google.genai.errors.ClientError` (429), which isn't caught —
+  it propagates as an unhandled exception, and Starlette's
+  `CORSMiddleware` never gets a chance to attach CORS headers to
+  responses generated *after* an unhandled exception leaves the route
+  (a well-known FastAPI/Starlette gotcha — deliberately-raised
+  `HTTPException`s get CORS headers fine; exceptions that bubble past
+  the route entirely don't). The practical effect: hitting the free-tier
+  quota surfaces to the browser as a misleading CORS error instead of a
+  clean 503, even though CORS itself is configured correctly. The
+  frontend's error handling degrades gracefully regardless (any failed
+  `fetch` — CORS-blocked or otherwise — renders the same inline error
+  state), so this isn't user-facing-broken, just confusing to debug
+  without backend log access. Worth an `except (ServerError, ClientError)`
+  fix backend-side, or catching `ClientError` and checking for 429
+  specifically to return a friendlier "rate limited" message.
+
+### Phase F — Market Panel: Own Chart [DONE]
+Followed the frontend spec in `frontend/FRONTEND_MARKET_PANEL.md`. Replaces
+`MarketSection`'s TradingView embeddable widget with a chart rendered on
+our own site via **TradingView Lightweight Charts** (open-source,
+`lightweight-charts@5.2.0` — `chart.addSeries(CandlestickSeries, opts)`
+form, not v4's `addCandlestickSeries()`), fed by real
+`GET /api/market` OHLCV.
+- `components/panel/MarketChart.tsx` — one candlestick chart per region,
+  cream rounded-card styling matching the rest of the panel (not the
+  library's dark-theme defaults). `layout.attributionLogo: false` set
+  deliberately — leaving TradingView's own logo visible would have
+  undercut the entire point of moving off their branded widget.
+  De-dupes + ascending-sorts by date defensively before `setData()` (the
+  library throws on unordered/repeated timestamps); backend's yfinance
+  passthrough hasn't been observed to violate this, but it isn't
+  guaranteed. `chart.remove()` runs in the `useEffect` cleanup keyed on
+  `[ohlcv]`.
+- `lib/useMarket.ts` — fetches `/api/market` once, same "fetch once,
+  reuse per continent" pattern as `useRegions` (the endpoint has no
+  per-symbol filtering — it always returns all 10 registry series in one
+  call; see `API.md`'s documented shape).
+- `MarketSection` now matches each region to its series by
+  `region.yf_ticker === series.symbol` (both keyed off the same backend
+  `REGIONS` list, so this is a real match, not a guess) and combines
+  `useRegions` + `useMarket` loading/error state before rendering.
+- **This changes a previously-documented known limitation**: Market used
+  to bypass `/api/market` entirely via TradingView's live-symbol widget;
+  it now depends on `/api/market` directly, so Market is *newly* subject
+  to the same world-scope-only gap News already had (see "Known
+  limitations", updated below).
+- **Fixes the `SP:SPX`-doesn't-render bug** documented under Phase D/Known
+  limitations — that was specific to TradingView's free embeddable widget
+  refusing that symbol string; our own chart runs on real yfinance OHLCV
+  and has no such restriction. Verified live: United States (S&P 500) now
+  renders a real candlestick chart under North America.
+- Loading/error states reuse the existing `SectionState.tsx` primitives
+  (skeleton while either `useRegions` or `useMarket` is loading, shared
+  error state if either fails); Africa's empty state is unchanged.
+- **Tone/divergence overlay (spec §5) deliberately not built** — the
+  backend's `/api/news` doesn't return `tone_timeline` yet, only
+  `articles[]` (confirmed against the live schema, not just docs). The
+  overlay was the whole reason the spec chose Lightweight Charts over the
+  widget, but there's no live data to feed it and backend work is out of
+  scope — user explicitly decided to skip it for time rather than block.
+  `MarketChart` does not accept a `toneTimeline` prop; add one if/when
+  the backend ships it.
+- `TradingViewMiniWidget.tsx` intentionally left in the tree, unused —
+  it's the spec's documented §6 fallback (chart-only, no-overlay
+  contexts), not currently wired to anything.
+- Verified against the live local backend in a real browser (Playwright):
+  candlesticks render correctly for Europe (4 regions) and North America
+  (2 regions, confirming the `SP:SPX` fix); Africa's empty state and the
+  News section (both populated and empty-state cases) are unaffected;
+  zero console errors across 5 fresh page loads/interactions.
+- **Known minor cosmetic artifact, not fixed**: a stray "0" tick fragment
+  renders at the bottom-left of each chart's time axis at the panel's
+  300px card width. Tried `leftPriceScale.visible: false` — didn't
+  resolve it. Not a data or functional bug (all real values render
+  correctly); left as a documented rough edge rather than sinking further
+  time into an opaque axis-formatting quirk, consistent with this
+  project's existing pattern for similar cosmetic-only issues (see
+  TradingView widget styling and dev-only console error entries below).
 
 ## Known limitations (backend-side, flagged rather than worked around)
 
@@ -192,27 +335,29 @@ the UI to consume them is future work, not this phase.
   populates every session's snapshot from the same world-level data
   regardless of which continent was set. The frontend does NOT fake
   per-continent filtering client-side — News is honestly labeled "World
-  markets" in the UI. (Market is *not* subject to this limitation in
-  practice, since it uses TradingView widgets fetching live per-symbol
-  data directly, bypassing `/api/market` entirely — see `API.md`'s own
-  note that `/api/market` is for the AI/analytics layer, not the frontend
-  chart.)
+  markets" in the UI. **As of Phase F, Market is also subject to this in
+  practice**: it used to bypass `/api/market` entirely via TradingView's
+  live-symbol widget (which is what `API.md`'s note about `/api/market`
+  being "for the AI/analytics layer, not the frontend chart" was
+  originally about), but the panel now renders its own chart from
+  `/api/market` OHLCV directly, per-region filtering done client-side by
+  matching `yf_ticker` against the always-full 10-series response, not
+  server-side.
 - **Africa has zero entries in the backend's region registry**
   (`backend/app/services/scope_service.py`'s `REGIONS` list — 10 entries:
   US, France, Germany, UK, Japan, pan-European Euro Stoxx 50, Hong Kong,
   Brazil, Canada, Australia). Africa's Market section correctly shows an
   honest empty state ("No tracked markets for this region yet.") rather
   than misattributing one of the 10 real regions to it.
-- **`tv_symbol: "SP:SPX"` (United States / S&P 500) doesn't render** in
-  TradingView's free Mini Symbol Overview embed — it shows "This symbol is
-  only available on TradingView" instead of a chart. This is North
-  America's most-clicked continent's primary index, so worth prioritizing.
-  Not something the frontend can fix by picking a different symbol itself
-  (that would silently diverge from what the backend registry says) —
-  flagging back for the backend teammate to check whether `SP:SPX` is the
-  right embeddable-widget symbol string, or whether it needs a different
-  exchange prefix (e.g. a `TVC:`-style one, like the other index entries
-  in the registry use).
+- ~~**`tv_symbol: "SP:SPX"` (United States / S&P 500) doesn't render** in
+  TradingView's free Mini Symbol Overview embed~~ — **moot as of Phase F.**
+  This was specific to the TradingView widget refusing that symbol
+  string; the Market panel no longer uses the widget as its primary
+  chart (`TradingViewMiniWidget` is now an unused §6 fallback — see Phase
+  F), so United States (S&P 500) renders normally via its own
+  `yf_ticker`-keyed OHLCV chart. Verified live. Leaving this entry
+  struck-through rather than deleted, since it's still relevant if the
+  widget fallback is ever wired back up for a chart-only context.
 - **GDELT news content doesn't reliably match "economy/markets" intent.**
   Live headlines observed during testing included a fishing tournament, a
   Brazilian political opinion piece, and mixed-language local news — the
@@ -231,6 +376,14 @@ the UI to consume them is future work, not this phase.
   access to. This is an inherent tradeoff of using the free embeddable
   widget rather than the paid Charting Library, not something more CSS
   can fix.
+- **Gemini free-tier daily quota (20 requests/day) is easy to exhaust
+  while testing/demoing `/api/chat`.** Confirmed as a genuine daily cap,
+  not a short burst limit (see "Running the backend locally"). A real
+  successful round trip was verified (both via `curl` and via the actual
+  `FloatingChat` UI, with the backend log showing `200 OK`), and the
+  inline error state was verified against the *real* failure this quota
+  produces — but be aware the demo could hit this live if `/api/chat` is
+  used more than ~20 times in a day on the same API key.
 - **TradingView `querySelector` console errors in `npm run dev` only.**
   React Strict Mode's dev-only double-invoke (mount → cleanup → mount)
   races against `TradingViewMiniWidget`'s async external `<script>` —
@@ -248,15 +401,23 @@ Do not introduce alternatives without discussion.
 - Tailwind CSS
 - react-globe.gl (wraps three.js + d3-geo) + three.js
 - Natural Earth GeoJSON, **110m resolution** — self-hosted, not CDN-loaded
-- Framer Motion (container morph, panel slide-in, label fades)
+- Framer Motion (container morph, panel slide-in, label fades, and now
+  `FloatingChat`'s shared-`layoutId` trigger↔panel morph)
 - Lucide React (icons) — used for `SectionState`'s error icon
-- TradingView embeddable "Mini Symbol Overview" widget — for Market rows,
-  script-injected via a ref-managed `useEffect` (not rendered through
-  JSX `<script>`), keyed off `tv_symbol` from `GET /api/regions`. See
-  "Known limitations" for the styling/symbol caveats.
-- Recharts — installed, still unused (Market uses TradingView directly,
-  not a custom chart). Left in `package.json`; not worth removing for a
-  hackathon timeline, but genuinely dead code if anyone's auditing.
+- **TradingView Lightweight Charts** (`lightweight-charts@5.2.0`) — Market
+  rows as of Phase F, real candlestick charts off `/api/market` OHLCV.
+  `chart.addSeries(CandlestickSeries, opts)` v5 form. See Phase F notes
+  for styling/attribution-logo/known-artifact details.
+- TradingView embeddable "Mini Symbol Overview" widget
+  (`TradingViewMiniWidget.tsx`) — **unused as of Phase F**, kept only as
+  the spec's documented fallback for a hypothetical future chart-only,
+  no-overlay context. Was used for Market rows through Phase D/E, keyed
+  off `tv_symbol` from `GET /api/regions`, script-injected via a
+  ref-managed `useEffect`. See "Known limitations" for the styling/symbol
+  caveats that applied while it was live.
+- Recharts — installed, still unused (Market uses Lightweight Charts, not
+  Recharts). Left in `package.json`; not worth removing for a hackathon
+  timeline, but genuinely dead code if anyone's auditing.
 - `fetch` (native) for the API client layer — no data-fetching library
   (SWR/React Query) was needed for this scope.
 
@@ -331,3 +492,57 @@ Do not introduce alternatives without discussion.
    local backend throughout (client layer → session/scope → regions/
    TradingView → news → full 6-continent regression sweep), not one
    large unverified change
+
+## Definition of Done (Phase E, UI only) — met
+
+1. `FloatingChat` trigger fixed bottom-left, visible in landing,
+   transition, and dashboard `ViewMode`s — verified, not just rendered
+   unconditionally and assumed
+2. Click expands into a chat panel with scrollable history, distinct
+   user/assistant message styling, non-spinner loading indicator, and
+   inline (not toast) error state
+3. `sendChatMessage` hits `POST /api/chat/{session_id}` with the exact
+   `API.md`-documented shape — verified via live network-request
+   inspection (method, URL pattern, body), not just code review
+4. A real message round-trip was confirmed successful (curl + browser,
+   both showing a genuine `200` with a real Gemini reply) — not just the
+   request being sent
+5. The failure path (Gemini free-tier quota exhausted) was also verified
+   against a real failure, confirming the inline error state renders
+   correctly rather than silently doing nothing
+6. Chat history persists across `ViewMode` changes (component stays
+   mounted globally) without any new AppShell view-logic being added
+   beyond rendering `<FloatingChat sessionId={sessionId} />` once
+7. Zero new dependencies; visual design stays within the existing
+   palette with zero light-surface bleed outside the panel itself
+8. `/api/perspective` and PanelList-content wiring explicitly not
+   touched, per scope
+
+## Definition of Done (Phase F) — met, with flagged limitations
+
+1. `MarketSection` renders real candlestick charts from `GET /api/market`
+   OHLCV via `MarketChart`/Lightweight Charts, not the TradingView
+   embeddable widget — verified live for Europe (4 regions) and North
+   America (2 regions), not just that the component compiles
+2. Region-to-series matching by `yf_ticker` verified against the live
+   `/api/market` response shape (`series[]`, all 10 regions, no
+   query-param filtering — confirmed by reading the actual backend route,
+   not assumed from the spec doc, which described params that don't
+   exist)
+3. `SP:SPX` (United States / S&P 500), previously broken under the
+   TradingView widget, confirmed rendering correctly under the new chart
+   — a real regression check, not just "should be fixed by construction"
+4. Africa's empty state and the News section (both real-data and
+   real-empty-state cases) confirmed unaffected by this change
+5. Loading/error states reuse existing `SectionState` primitives,
+   combining `useRegions` + `useMarket` status
+6. Zero console errors across 5 fresh browser sessions/interactions
+   (Playwright-driven, production build)
+7. Tone/divergence overlay (spec §5) explicitly not built — no live
+   `tone_timeline` data from `/api/news` to feed it; user decision to
+   defer rather than build against a non-existent field, given time
+   constraints
+8. TradingView attribution logo removed (`attributionLogo: false`) since
+   leaving it would have undercut the reason for this change; one
+   remaining minor cosmetic artifact (a stray axis-tick fragment at
+   300px card width) documented rather than chased further

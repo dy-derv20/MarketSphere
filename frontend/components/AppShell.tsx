@@ -2,6 +2,7 @@
 
 import { useCallback, useState } from "react";
 import { AnimatePresence } from "framer-motion";
+import FloatingChat from "@/components/chat/FloatingChat";
 import LandingGlobe from "@/components/globe/LandingGlobe";
 import PanelList from "@/components/panel/PanelList";
 import TitleBar from "@/components/TitleBar";
@@ -47,6 +48,7 @@ export default function AppShell() {
           {showDashboardChrome && selectedContinent && <PanelList key="panel" continentId={selectedContinent} />}
         </AnimatePresence>
       </div>
+      <FloatingChat sessionId={sessionId} />
     </div>
   );
 }
