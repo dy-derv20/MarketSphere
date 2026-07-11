@@ -1,15 +1,26 @@
 import asyncio
+from datetime import datetime, timedelta
 
 import yfinance as yf
+from sqlalchemy import func, select
+from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.services.cache import TTLCache
-from app.services.scope_service import REGIONS
+from app.models.market_bar import MarketBar
 
-_cache = TTLCache(ttl_seconds=300)
+FRESHNESS_WINDOW = timedelta(minutes=5)
+FETCH_PERIOD = "3mo"  # generous fixed window so most requested ranges are served from cache
+
+_RANGE_TO_DAYS = {"5d": 5, "1mo": 30, "3mo": 90, "6mo": 180, "1y": 365}
 
 
-def _fetch_ticker_history(ticker: str) -> list[dict]:
-    history = yf.Ticker(ticker).history(period="1mo", interval="1d")
+def _slice_range(ohlcv: list[dict], range_: str) -> list[dict]:
+    days = _RANGE_TO_DAYS.get(range_)
+    return ohlcv if days is None else ohlcv[-days:]
+
+
+def _fetch_ticker_history(ticker: str, interval: str) -> list[dict]:
+    history = yf.Ticker(ticker).history(period=FETCH_PERIOD, interval=interval)
     return [
         {
             "date": index.strftime("%Y-%m-%d"),
@@ -23,18 +34,62 @@ def _fetch_ticker_history(ticker: str) -> list[dict]:
     ]
 
 
-async def get_world_market_data() -> list[dict]:
-    cached = _cache.get("world")
+async def _read_cached(db: AsyncSession, symbol: str, interval: str) -> list[dict] | None:
+    result = await db.execute(
+        select(MarketBar).where(MarketBar.symbol == symbol, MarketBar.interval == interval).order_by(MarketBar.date)
+    )
+    bars = result.scalars().all()
+    if not bars:
+        return None
+    if datetime.utcnow() - max(b.ingested_at for b in bars) > FRESHNESS_WINDOW:
+        return None
+    return [
+        {"date": b.date.strftime("%Y-%m-%d"), "open": b.open, "high": b.high, "low": b.low, "close": b.close, "volume": b.volume}
+        for b in bars
+    ]
+
+
+async def _store(db: AsyncSession, symbol: str, interval: str, ohlcv: list[dict]) -> None:
+    if not ohlcv:
+        return
+    rows = [
+        {
+            "symbol": symbol,
+            "interval": interval,
+            "date": datetime.strptime(point["date"], "%Y-%m-%d").date(),
+            "open": point["open"],
+            "high": point["high"],
+            "low": point["low"],
+            "close": point["close"],
+            "volume": point["volume"],
+        }
+        for point in ohlcv
+    ]
+    stmt = insert(MarketBar).values(rows)
+    stmt = stmt.on_conflict_do_update(
+        index_elements=["symbol", "interval", "date"],
+        set_={
+            "open": stmt.excluded.open,
+            "high": stmt.excluded.high,
+            "low": stmt.excluded.low,
+            "close": stmt.excluded.close,
+            "volume": stmt.excluded.volume,
+            "ingested_at": func.now(),
+        },
+    )
+    await db.execute(stmt)
+    await db.commit()
+
+
+async def get_market_data(db: AsyncSession, symbol: str, range_: str = "1mo", interval: str = "1d") -> list[dict]:
+    cached = await _read_cached(db, symbol, interval)
     if cached is not None:
-        return cached
+        return _slice_range(cached, range_)
 
-    series = []
-    for entry in REGIONS:
-        try:
-            ohlcv = await asyncio.to_thread(_fetch_ticker_history, entry["yf_ticker"])
-        except Exception:
-            ohlcv = []
-        series.append({"symbol": entry["yf_ticker"], "label": entry["region"], "ohlcv": ohlcv})
+    try:
+        ohlcv = await asyncio.to_thread(_fetch_ticker_history, symbol, interval)
+    except Exception:
+        ohlcv = []
 
-    _cache.set("world", series)
-    return series
+    await _store(db, symbol, interval, ohlcv)
+    return _slice_range(ohlcv, range_)
