@@ -16,10 +16,10 @@ SYSTEM_INSTRUCTION = (
 )
 
 
-def _build_context_block(articles: list[dict], market_series: list[dict]) -> str:
+def _build_context_block(articles: list, market_series: list[dict]) -> str:
     blocks = []
     if articles:
-        headlines = [f"- {a['title']} ({a['country']}, {a['published_at']})" for a in articles[:15]]
+        headlines = [f"- {a.title} ({a.country}, {a.published_at})" for a in articles[:15]]
         blocks.append("Current headlines:\n" + "\n".join(headlines))
     if market_series:
         summary = [
@@ -31,14 +31,14 @@ def _build_context_block(articles: list[dict], market_series: list[dict]) -> str
 
 async def stream_answer(
     message: str,
-    articles: list[dict] | None = None,
+    articles: list | None = None,
     market_series: list[dict] | None = None,
     recent_history: list[str] | None = None,
 ) -> AsyncIterator[dict]:
     history_block = f"Recent conversation:\n{chr(10).join(recent_history)}\n\n" if recent_history else ""
     context_block = _build_context_block(articles or [], market_series or [])
     prompt = f"{history_block}{context_block}\n\nUser: {message}"
-    citations = [a["url"] for a in (articles or []) if a.get("url")]
+    citations = [a.url for a in (articles or []) if a.url]
 
     try:
         stream = await client.aio.models.generate_content_stream(

@@ -1,147 +1,106 @@
-# MarketSphere Backend API
+# MarketSphere Backend API (v2)
 
-FastAPI service backing the MarketSphere globe UI. This doc is kept in sync as the backend is built — treat it as the source of truth for what endpoints exist and their shapes. External data-source rationale (GDELT, yfinance, TradingView) lives in `API_INFRASTRUCTURE.MD`; this doc covers only *our own* endpoints, which is what the frontend actually talks to.
+FastAPI service backing the MarketSphere globe UI. This is the source of truth for the frontend
+— treat `BACKEND_ARCHITECTURE.md` and `API_INFRASTRUCTURE.md` as design rationale, this file as
+the actual contract. Interactive docs (always accurate, auto-generated) at `/docs` once running.
+
+## Core model — dual context, panels, stateless chat
+
+- **`scopeConfig`** — driven by globe navigation (`GET /api/scope?region=`). Ephemeral, regenerated every call, never persisted server-side.
+- **`workspaceConfig`** — driven by chat `build` queries. Client-held: sent in each `/api/chat` request, only persisted server-side via an explicit `POST /api/layouts` save.
+- **`activeView`** — `"scope"` | `"workspace"`, tracked client-side, tells the renderer which config to draw.
+- **Chat history IS persisted server-side** (a deliberate deviation from a pure-stateless design — see below) — `POST /api/session` returns a `session_id`; every `/api/chat` call requires it and both the user message and model reply are saved, so a reload doesn't lose the conversation. `workspaceConfig` itself still isn't auto-saved — only history is.
+
+Every route is under `/api`.
 
 ## Running locally
 
 ```
 cd backend
-docker compose up -d          # Postgres, matches .env.example out of the box
+docker compose up -d          # Postgres — if you already have Postgres on :5432 locally, stop it first or remap the container port
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-cp .env.example .env          # fill in GEMINI_API_KEY at minimum; DATABASE_URL already matches docker-compose.yml
+cp .env.example .env          # fill in GEMINI_API_KEY, GUARDIAN_API_KEY, ALPHA_VANTAGE_API_KEY
 uvicorn app.main:app --reload --port 8000
+python -m scripts.ingest_news --days 3   # populates news_articles — /api/news returns nothing until this runs
 ```
 
-Base URL (local): `http://localhost:8000`. Every route is under `/api`. Interactive docs (always accurate, auto-generated from the code) at `http://localhost:8000/docs` — useful as a live supplement to this file.
-
-## Session model (reload persistence)
-
-Every browser session is backed by a `Session` row, keyed by a server-generated UUID. Frontend flow:
-
-1. On first load, `POST /api/session` → returns `session_id`. Persist it (e.g. `localStorage`).
-2. On subsequent loads, `GET /api/session/{session_id}` → restores chat history + last-viewed scope + last news/market snapshot, so a refresh mid-demo doesn't lose state.
-3. Pass `session_id` on `/api/scope`, `/api/chat` calls so the backend can track what the user is currently looking at and keep the chat model's context in sync with it. (`/api/news` and `/api/market` are stateless — see below.)
+**Gemini quota note:** the free-tier key used during this build hit a **hard daily cap of 20 requests** on `gemini-flash-latest` (`gemini-3.5-flash`) — not a per-minute throttle, a full-day lockout once exhausted. Check quota/billing on whichever key is used for the actual demo before relying on `/api/chat` working for the full session; `gemini-pro-latest` additionally has **zero** free-tier quota on the key tested here.
 
 ## Routers
 
 | Prefix | Purpose | Status |
 |---|---|---|
-| `/api/session` | create/restore a session (chat history + last scope + last snapshots) | **live** |
-| `/api/scope` | set/get current continent/country/state scope | **live** (world + continent levels only; country/state land in a later milestone) |
-| `/api/regions` | static registry: region → GDELT country code, yfinance ticker, TradingView symbol | **live** |
-| `/api/news` | world-scope news headlines (GDELT) | **live** (world scope only; per-country filtering lands with the country-scope milestone) |
-| `/api/market` | world-scope OHLCV for a basket of major indices (yfinance) | **live** (world scope only; single-region filtering lands with the country-scope milestone) |
-| `/api/chat` | chat with Gemini, context-aware of current scope + news/market snapshot | **live** |
-| `/api/perspective` | one-shot structured Gemini framing-contrast + divergence analysis (world scope only) | **live** |
-| `/api/health` | liveness check | **live** |
+| `/api/session` | create a session, returns default world `scopeConfig` | **live** |
+| `/api/scope` | deterministic scope-config builder from the region registry | **live** |
+| `/api/regions` | curated region registry (FIPS, yfinance ticker, TradingView symbol) | **live** |
+| `/api/news` | DB-backed news (GDELT + Guardian + Alpha Vantage), per-panel hydration | **live**, requires ingestion run first |
+| `/api/market` | DB-cached OHLCV via yfinance, per-panel hydration | **live** |
+| `/api/chat` | router: classify → `answer`/`build`/`analyze`, persists history | **live**, not yet load-tested end-to-end due to quota |
+| `/api/layouts` | save/list/fetch named workspace configs | **live** |
+| `/api/health` | liveness | **live** |
 
 ## Endpoints
 
 ### `GET /api/health`
-Response `200`: `{ "status": "ok" }`
+`{ "status": "ok" }`
 
 ### `POST /api/session`
-Creates a new session. No body.
-
-Response `200`:
+No body. Creates a session, returns its id plus the default world-scope panel config.
 ```json
-{
-  "session_id": "uuid",
-  "current_scope": null,
-  "current_news_snapshot": null,
-  "current_market_snapshot": null,
-  "messages": []
-}
+{ "session_id": "uuid", "scopeConfig": { "version": 1, "panels": [ ... ] } }
 ```
 
-### `GET /api/session/{session_id}`
-Restores a session. `404` if unknown. Response: same shape as above, populated with whatever the session last had.
-
-### `PUT /api/scope/{session_id}`
-Sets the current scope for a session.
-
-Request body: `{ "level": "world" | "continent", "id": "europe" }` (`"country"` / `"state"` land in a later milestone)
-
-Response `200`: `{ "level": "continent", "id": "europe", "label": "Europe" }`. `400` if `id` isn't recognized for that `level`.
-
-### `GET /api/scope/{session_id}`
-Returns the session's current scope (same shape as above), or `null` if none set yet.
+### `GET /api/scope?region=`
+`region` omitted or `"world"` → world scope (1 global news panel + all 10 market indices). Otherwise must be one of the 6 continent ids from `/api/scope/continents` → per-country news panels + continent-level news panel + matching market indices. `400` on an unrecognized region.
+```json
+{ "scopeConfig": { "version": 1, "panels": [ { "id": "p_xxxx", "type": "news"|"market", "title": "...", "rationale": "...", "params": { ... } } ] } }
+```
+`news` panel params: `{ "country": "JA"|null, "continent": "europe"|null, "query": "...", "timespan": "24h", "max": 40 }`. `market` panel params: `{ "symbol": "^N225", "range": "1mo", "interval": "1d" }`.
 
 ### `GET /api/scope/continents`
-No params. Returns the 6 valid continent ids/labels for `PUT /api/scope` (`level: "continent"`):
-```json
-[
-  { "id": "africa", "label": "Africa" },
-  { "id": "asia", "label": "Asia" },
-  { "id": "europe", "label": "Europe" },
-  { "id": "north-america", "label": "North America" },
-  { "id": "oceania", "label": "Oceania" },
-  { "id": "south-america", "label": "South America" }
-]
-```
-Use this instead of hardcoding continent ids on the frontend — it's the same source `PUT /api/scope` validates against.
+`[{ "id": "europe", "label": "Europe" }, ...]` — the 6 valid continent ids, source of truth for `region=`.
 
 ### `GET /api/regions`
-No params. Returns the full curated region registry:
+`[{ "region": "Japan (Nikkei 225)", "country_fips": "JA", "yf_ticker": "^N225", "tv_symbol": "TVC:NI225" }, ...]` — 10 curated entries. `tv_symbol` is for the frontend's TradingView widget only; backend never touches TradingView.
+
+### `GET /api/news?continent=&country=&max=`
+All params optional; no params = world scope, all sources mixed. `country` accepts either FIPS (`UK`) or ISO2 (`GB`) — translated internally, DB storage is ISO2. Returns **only what's already been ingested** — this is DB-backed, not a live external call.
 ```json
-[
-  { "region": "United States (S&P 500)", "country_fips": "US", "yf_ticker": "^GSPC", "tv_symbol": "SP:SPX" },
-  { "region": "Europe (Euro Stoxx 50)", "country_fips": null, "yf_ticker": "^STOXX50E", "tv_symbol": "TVC:SX5E" },
-  ...
-]
+{ "articles": [ { "source": "guardian"|"alpha_vantage"|"gdelt", "title": "...", "url": "...", "domain": "...", "body": "..."|null, "summary": "..."|null, "image_url": "..."|null, "language": "..."|null, "country": "US"|null, "continent": "north-america"|null, "sentiment_score": 0.3|null, "published_at": "2026-07-11T18:03:00" } ] }
 ```
-`tv_symbol` is for the frontend's TradingView widget — the backend never touches TradingView itself.
+`body` is Guardian-only (full text), `summary`/`sentiment_score` Alpha Vantage-only, else `null`.
 
-### `GET /api/news`
-No params yet (world scope only). Returns top world economy/markets headlines from the last 24h.
+### `GET /api/market?symbol=&range=&interval=`
+`symbol` required (a yfinance ticker, e.g. `^GSPC`). `range` defaults `1mo` (`5d`|`1mo`|`3mo`|`6mo`|`1y`), `interval` defaults `1d`. DB-cached (5 min freshness window) — first call per symbol hits yfinance and stores it, subsequent calls read Postgres. Unknown/delisted symbols fail soft to `{"ohlcv": []}`, never a 500.
 ```json
-{
-  "articles": [
-    { "title": "...", "url": "...", "domain": "...", "published_at": "20260711T173000Z", "language": "Chinese", "source_country": "China" }
-  ]
-}
+{ "symbol": "^GSPC", "ohlcv": [ { "date": "2026-06-11", "open": 7400.1, "high": 7420.5, "low": 7390.2, "close": 7410.0, "volume": 4785840000 } ] }
 ```
-Cached 5 minutes server-side. Fails soft to `{ "articles": [] }` if GDELT is unreachable or throttling — never a 500.
 
-### `GET /api/market`
-No params yet (world scope only). Returns OHLCV for all 10 regions in the registry, ~1 month daily bars.
+### `POST /api/chat`
 ```json
-{
-  "series": [
-    {
-      "symbol": "^GSPC",
-      "label": "United States (S&P 500)",
-      "ohlcv": [ { "date": "2026-06-11", "open": 7400.1, "high": 7420.5, "low": 7390.2, "close": 7410.0, "volume": 123456789 } ]
-    }
-  ]
-}
+{ "session_id": "uuid", "message": "...", "active_view": "scope"|"workspace", "workspace_config": {...}|null, "current_scope": "world"|"europe"|... }
 ```
-Cached 5 minutes server-side. A ticker that fails to fetch returns `"ohlcv": []` for that series rather than failing the whole response. This is numeric data for the AI/analytics layer — the visual chart on the frontend should use TradingView widgets directly (see `API_INFRASTRUCTURE.MD` §4), not this endpoint.
+`404` if `session_id` unknown. `503` if Gemini is unavailable (quota, key, transient) — safe to retry, nothing is persisted on failure. Response shape depends on classified intent:
 
-### `POST /api/chat/{session_id}`
-Send a message to the conversational assistant. Session-scoped: reads `current_scope` + `current_news_snapshot` + `current_market_snapshot` (set by the last `PUT /api/scope` call) plus prior chat history to build context, and persists both the user message and the model's reply to `chat_messages`.
+- **`answer`** — `text/event-stream` (SSE). Each event: `data: {"type": "text", "text": "..."}` (repeated) then `data: {"type": "done", "citations": [...]}`, or `data: {"type": "error", "message": "..."}` if the stream fails mid-way. Grounded in DB-backed news (no live search tool — see `BACKEND_ARCHITECTURE.md` deviation note if added later).
+- **`build`** — plain JSON: `{ "action": "build", "target": "workspace", "config": {...PanelConfig}, "switch_view": true, "notes": "Skipped: 'Korea' isn't a recognized country"|null }`. Every `country`/`symbol` is registry-validated with one bounded repair retry before falling back to dropping the panel.
+- **`analyze`** — plain JSON: `{ "action": "analyze", "text": "hedged narrative paragraph", "evidence": { "articles_used": ["url", ...], "tone_trend": 0.12, "price_change_pct": -1.4 } | null }`. `evidence` is `null` if the company name couldn't be resolved (curated ~34-company map — see `entity_resolver.py`).
 
-Request body: `{ "message": "What's driving the mood in European markets right now?" }`
-
-Response `200`:
+### `POST /api/layouts`
 ```json
-{ "role": "model", "content": "...", "created_at": "2026-07-11T18:03:00Z" }
+{ "name": "My Workspace", "config": {...PanelConfig}, "session_id": "uuid"|null }
 ```
-`404` if session unknown. `503` if Gemini is temporarily unavailable (message is not persisted in that case — safe to retry).
+→ `{ "id": "uuid", "session_id": "uuid"|null, "name": "...", "config": {...}, "created_at": "...", "updated_at": "..." }`
 
-### `POST /api/perspective`
-No body yet (world scope only — country/event-scoped params land with that milestone). Pulls the current world news + market data and asks Gemini for a structured framing-contrast analysis.
+### `GET /api/layouts?session_id=`
+List layouts, optionally filtered by session. Same shape as above, as a list.
 
-Response `200`:
-```json
-{
-  "summary": "...",
-  "dominant_framings": [ { "theme": "...", "description": "..." } ],
-  "tone_market_divergence": "...",
-  "divergence_score": 0.35
-}
-```
-`divergence_score` ranges 0 (narrative and market movement aligned) to 1 (fully divergent). `503` if Gemini is temporarily unavailable.
+### `GET /api/layouts/{layout_id}`
+Fetch one. `404` if unknown.
 
-**Note:** `PUT /api/scope` currently calls the same world-only news/market functions used by `/api/news` and `/api/market` to populate the session snapshot — so right now every scope (world or any continent) sees identical world-level snapshot data. This starts differentiating once continent/country-scoped fetching is built; no frontend changes needed when that happens, the response shapes stay the same.
+## Known gaps / next steps
+
+- `/api/chat` has not had a full live end-to-end pass across all three intents through actual HTTP due to the daily quota cap — each piece (classifier, build, answer, analyze) is independently verified working with real data, and the route's non-Gemini mechanics (session lookup, 404s, validation, error handling) are verified, but the full request→response chain for each intent through the live route needs one more pass once quota resets.
+- Guardian's section→continent mapping (`guardian_client.py`) is conservative and was built without live network access to verify against Guardian's actual tag API — worth double-checking.
+- Country/continent detection for `answer`'s context currently only resolves exact country names/codes in `entity_resolver.COUNTRY_FIPS_LOOKUP` (9 countries) — adjectival forms like "Japanese" won't resolve, falling back to unfiltered world news rather than erroring.

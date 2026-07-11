@@ -4,6 +4,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.session import get_db
 from app.models.session import Session as SessionModel
 from app.schemas.session import SessionResponse
+from app.services.scope_service import build_scope_config
 
 router = APIRouter(prefix="/session", tags=["session"])
 
@@ -14,4 +15,4 @@ async def create_session(db: AsyncSession = Depends(get_db)):
     db.add(session)
     await db.commit()
     await db.refresh(session)
-    return SessionResponse(session_id=session.id)
+    return SessionResponse(session_id=session.id, scopeConfig=build_scope_config("world", "world"))
