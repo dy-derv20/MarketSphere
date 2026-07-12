@@ -15,10 +15,14 @@ export type ScopeConfigState =
 // Re-fetches whenever continentId changes; this is the single source of
 // panels for both MarketSection and NewsSection (see PanelList), so they
 // stay consistent and there's exactly one request per continent switch.
-export function useScopeConfig(continentId: ContinentId): ScopeConfigState {
+// `continentId` is nullable so PanelList can call this hook unconditionally
+// even while showing a chat-built workspace instead of a scope (Rules of
+// Hooks - can't call it conditionally) - null just skips the fetch.
+export function useScopeConfig(continentId: ContinentId | null): ScopeConfigState {
   const [state, setState] = useState<ScopeConfigState>({ status: "loading" });
 
   useEffect(() => {
+    if (!continentId) return;
     let cancelled = false;
     setState({ status: "loading" });
     getScopeForContinent(continentId)

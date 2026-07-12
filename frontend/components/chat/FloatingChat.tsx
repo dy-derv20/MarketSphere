@@ -5,7 +5,7 @@ import { AnimatePresence, motion } from "framer-motion";
 import { AlertCircle, Send, Sparkles, X } from "lucide-react";
 import { sendChatMessage } from "@/lib/api/chat";
 import { ApiError } from "@/lib/api/http";
-import type { AnswerStreamEvent, ChatMessage } from "@/types/api";
+import type { AnswerStreamEvent, ChatMessage, PanelConfig } from "@/types/api";
 
 interface DisplayMessage {
   id: string;
@@ -31,9 +31,20 @@ const SPRING = { type: "spring" as const, stiffness: 320, damping: 30 };
 interface FloatingChatProps {
   sessionId: string | null;
   initialMessages?: ChatMessage[];
+  activeView: "scope" | "workspace";
+  workspaceConfig: PanelConfig | null;
+  currentScope: string;
+  onWorkspaceBuild: (config: PanelConfig) => void;
 }
 
-export default function FloatingChat({ sessionId, initialMessages = [] }: FloatingChatProps) {
+export default function FloatingChat({
+  sessionId,
+  initialMessages = [],
+  activeView,
+  workspaceConfig,
+  currentScope,
+  onWorkspaceBuild,
+}: FloatingChatProps) {
   const [isOpen, setIsOpen] = useState(false);
   const [messages, setMessages] = useState<DisplayMessage[]>([]);
   const [input, setInput] = useState("");
@@ -66,7 +77,7 @@ export default function FloatingChat({ sessionId, initialMessages = [] }: Floati
     setIsSending(true);
 
     try {
-      const result = await sendChatMessage({ sessionId, message: text });
+      const result = await sendChatMessage({ sessionId, message: text, activeView, workspaceConfig, currentScope });
 
       if (result.kind === "stream") {
         const modelId = newId();
@@ -92,6 +103,12 @@ export default function FloatingChat({ sessionId, initialMessages = [] }: Floati
         }
       } else {
         const { data } = result;
+        if (data.action === "build") {
+          // This is the part that actually renders the built config - without
+          // this call, the panel content silently stays whatever it was
+          // before, even though the backend genuinely built a new config.
+          onWorkspaceBuild(data.config);
+        }
         const content =
           data.action === "build"
             ? (data.notes ?? `Updated your workspace with ${data.config.panels.length} panel(s).`)

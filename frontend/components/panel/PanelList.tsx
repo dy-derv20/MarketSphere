@@ -1,6 +1,7 @@
 "use client";
 
 import { motion } from "framer-motion";
+import type { Panel, PanelConfig } from "@/types/api";
 import type { ContinentId } from "@/types/globe";
 import { CONTINENT_TRANSITION_MS } from "@/lib/transitionTiming";
 import { useScopeConfig } from "@/lib/useScopeConfig";
@@ -11,11 +12,23 @@ import { ErrorState, SkeletonRows } from "@/components/panel/SectionState";
 const PANEL_WIDTH = 300;
 
 interface PanelListProps {
-  continentId: ContinentId;
+  continentId: ContinentId | null;
+  activeView: "scope" | "workspace";
+  workspaceConfig: PanelConfig | null;
 }
 
-export default function PanelList({ continentId }: PanelListProps) {
-  const scopeState = useScopeConfig(continentId);
+export default function PanelList({ continentId, activeView, workspaceConfig }: PanelListProps) {
+  // Workspace mode already has its panels in hand (from a chat `build`
+  // response) - no fetch needed, just render them. Scope mode still fetches
+  // via GET /api/scope?region=... as before. useScopeConfig is still called
+  // unconditionally (Rules of Hooks) even in workspace mode; it just no-ops
+  // when continentId is null.
+  const scopeState = useScopeConfig(activeView === "scope" ? continentId : null);
+  const panels: Panel[] | null =
+    activeView === "workspace" ? (workspaceConfig?.panels ?? []) : scopeState.status === "ready" ? scopeState.panels : null;
+  const isLoading = activeView === "scope" && scopeState.status === "loading";
+  const isError = activeView === "scope" && scopeState.status === "error";
+  const label = activeView === "workspace" ? "Custom workspace" : (continentId ?? "");
 
   return (
     // Outer element animates *width* (not a transform) from 0 -> PANEL_WIDTH,
@@ -40,21 +53,19 @@ export default function PanelList({ continentId }: PanelListProps) {
         style={{ width: PANEL_WIDTH }}
         className="h-full overflow-y-auto px-4 py-6"
       >
-        {scopeState.status === "loading" && (
+        {isLoading && (
           <div className="flex flex-col gap-6">
             <SkeletonRows count={3} />
             <SkeletonRows count={5} />
           </div>
         )}
 
-        {scopeState.status === "error" && (
-          <ErrorState message="Couldn't load this region. Check your connection and try again." />
-        )}
+        {isError && <ErrorState message="Couldn't load this region. Check your connection and try again." />}
 
-        {scopeState.status === "ready" && (
+        {panels && (
           <div className="flex flex-col gap-6">
-            <MarketSection panels={scopeState.panels.filter((p) => p.type === "market")} />
-            <NewsSection panels={scopeState.panels.filter((p) => p.type === "news")} label={continentId} />
+            <MarketSection panels={panels.filter((p) => p.type === "market")} />
+            <NewsSection panels={panels.filter((p) => p.type === "news")} label={label} />
           </div>
         )}
       </motion.div>

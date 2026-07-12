@@ -22,6 +22,12 @@ export function getScopeForContinent(continentId: ContinentId): Promise<ScopeCon
   return getScope(CONTINENT_TO_SCOPE_ID[continentId]);
 }
 
+// Exposed standalone for callers that need the backend scope id without
+// fetching (e.g. reporting `current_scope` on a /api/chat request).
+export function continentToScopeId(continentId: ContinentId): string {
+  return CONTINENT_TO_SCOPE_ID[continentId];
+}
+
 export function getWorldScope(): Promise<ScopeConfigResponse> {
   return getScope("world");
 }

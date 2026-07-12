@@ -11,6 +11,15 @@ export type NewsState =
   | { status: "error"; error: unknown }
   | { status: "ready"; articles: NewsArticle[] };
 
+// A continent scope fetches one news panel per country plus one
+// continent-level panel, each already capped at its own `max` - but
+// flattened together that can still add up to well over a hundred rows in
+// a 300px sidebar. Capped here, after a global recency sort (each panel is
+// only sorted *within itself* by the backend), so the displayed set is
+// actually "the N most recent across every panel", not "everything from
+// panel 1, then panel 2, ...".
+const MAX_DISPLAYED_ARTICLES = 20;
+
 // Takes the news-type panels from the current scopeConfig (see
 // useScopeConfig) - usually one continent-level panel plus one per country
 // for a continent scope, or a single world panel - fetches each via its own
@@ -49,7 +58,9 @@ export function useNews(newsPanels: Panel[]): NewsState {
             headline: a.title,
             source: a.domain ?? a.source,
             publishedAt: parseGdeltTimestamp(a.published_at),
-          }));
+          }))
+          .sort((a, b) => (a.publishedAt < b.publishedAt ? 1 : a.publishedAt > b.publishedAt ? -1 : 0))
+          .slice(0, MAX_DISPLAYED_ARTICLES);
         setState({ status: "ready", articles });
       });
 
