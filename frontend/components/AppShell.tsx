@@ -2,10 +2,10 @@
 
 import { useCallback, useState } from "react";
 import { AnimatePresence } from "framer-motion";
+import Brand from "@/components/Brand";
 import FloatingChat from "@/components/chat/FloatingChat";
 import LandingGlobe from "@/components/globe/LandingGlobe";
 import PanelList from "@/components/panel/PanelList";
-import TitleBar from "@/components/TitleBar";
 import { continentToScopeId } from "@/lib/api/scope";
 import { CONTINENT_TRANSITION_MS } from "@/lib/transitionTiming";
 import { useAppSession } from "@/lib/useAppSession";
@@ -45,8 +45,8 @@ export default function AppShell() {
   const showPanelList = showDashboardChrome && (activeView === "workspace" ? workspaceConfig !== null : selectedContinent !== null);
 
   return (
-    <div className="flex h-dvh w-dvw flex-col overflow-hidden bg-[#0a0e14]">
-      {showDashboardChrome && <TitleBar />}
+    <div className="relative flex h-dvh w-dvw flex-col overflow-hidden bg-[#0a0e14]">
+      <Brand />
       <div className="flex min-h-0 flex-1">
         <div className="relative h-full min-w-0 flex-1">
           <LandingGlobe onContinentSelect={handleContinentSelect} />

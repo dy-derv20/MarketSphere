@@ -1,5 +1,6 @@
 "use client";
 
+import { Newspaper } from "lucide-react";
 import type { Panel } from "@/types/api";
 import { useNews } from "@/lib/useNews";
 import NewsRow from "@/components/panel/NewsRow";
@@ -10,9 +11,13 @@ export default function NewsSection({ panels, label }: { panels: Panel[]; label:
 
   return (
     <section>
-      <div className="mb-2 flex items-baseline justify-between px-1">
-        <h2 className="text-xs font-medium uppercase tracking-wider text-[#5b6472]">News</h2>
-        <span className="text-[10px] text-[#5b6472]/70">{label}</span>
+      <div className="mb-3 flex items-center justify-between px-1">
+        <div className="flex items-center gap-2">
+          <span className="h-4 w-1 rounded-full bg-[#5ad1e0]" />
+          <Newspaper className="h-4 w-4 text-[#5ad1e0]" strokeWidth={2.25} />
+          <h2 className="text-base font-semibold tracking-tight text-zinc-50">News</h2>
+        </div>
+        <span className="text-[10px] uppercase tracking-wide text-[#5b6472]">{label}</span>
       </div>
 
       {newsState.status === "loading" && <SkeletonRows count={5} />}

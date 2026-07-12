@@ -1,5 +1,6 @@
 "use client";
 
+import { TrendingUp } from "lucide-react";
 import type { Panel } from "@/types/api";
 import { useMarket } from "@/lib/useMarket";
 import MarketChart from "@/components/panel/MarketChart";
@@ -10,7 +11,11 @@ export default function MarketSection({ panels }: { panels: Panel[] }) {
 
   return (
     <section>
-      <h2 className="mb-2 px-1 text-xs font-medium uppercase tracking-wider text-[#5b6472]">Market</h2>
+      <div className="mb-3 flex items-center gap-2 px-1">
+        <span className="h-4 w-1 rounded-full bg-[#12b886]" />
+        <TrendingUp className="h-4 w-4 text-[#12b886]" strokeWidth={2.25} />
+        <h2 className="text-base font-semibold tracking-tight text-zinc-50">Market</h2>
+      </div>
 
       {marketState.status === "loading" && <SkeletonRows count={3} />}
 

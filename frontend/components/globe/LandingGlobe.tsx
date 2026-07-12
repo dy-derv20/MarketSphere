@@ -32,6 +32,7 @@ const CONTINENT_CENTROIDS: Record<ContinentId, { lat: number; lng: number }> = {
   Asia: { lat: 45, lng: 90 },
   Oceania: { lat: -25, lng: 135 },
 };
+const CONTINENT_IDS = Object.keys(CONTINENT_CENTROIDS) as ContinentId[];
 
 interface RGBA {
   r: number;
@@ -40,15 +41,31 @@ interface RGBA {
   a: number;
 }
 const REST_CAP: RGBA = { r: 0, g: 0, b: 0, a: 0 };
-const HIGHLIGHT_CAP: RGBA = { r: 90, g: 209, b: 224, a: 0.35 };
+const ACCENT_CAP: RGBA = { r: 90, g: 209, b: 224, a: 0.36 };
 const REST_STROKE: RGBA = { r: 255, g: 255, b: 255, a: 0.25 };
-const HIGHLIGHT_STROKE: RGBA = { r: 180, g: 238, b: 245, a: 0.9 };
+const ACCENT_STROKE: RGBA = { r: 180, g: 238, b: 245, a: 0.92 };
 const REST_ALTITUDE = 0.001;
-const HIGHLIGHT_ALTITUDE = 0.012; // deliberately far from REST_ALTITUDE: avoids
-// near-coplanar z-fighting between the visible highlighted caps and the ~176
+const SELECTED_ALTITUDE = 0.012; // deliberately far from REST_ALTITUDE: avoids
+// near-coplanar z-fighting between the visible selected cap and the ~176
 // other (invisible, alpha=0) resting caps that are always present in the scene.
 
-const HIGHLIGHT_FADE_MS = 200;
+// Every continent eases along one continuous 0→1 "strength" toward either end
+// of the same REST_* → ACCENT_*/SELECTED_ALTITUDE ramp. A mere hover only
+// ever targets HOVER_STRENGTH (a partial, subtle wash); locking a continent
+// targets a full 1. Sharing one ramp means clicking mid-hover continues
+// smoothly from wherever the hover fade already was, instead of jumping.
+const HOVER_STRENGTH = 0.34;
+// Altitude only starts lifting once strength passes the hover ceiling, so a
+// mere hover never gets the "raised" treatment reserved for true selection —
+// color/border alone communicate hover.
+const ALTITUDE_LIFT_START = HOVER_STRENGTH;
+// Exponential time-constants (not fixed durations) driving the approach
+// toward each continent's target strength — see the strength effect below.
+// Hover eases in/out quickly, for a responsive feel; the final push into
+// "selected" eases in slower, for a more deliberate, weighted feel.
+const HOVER_TAU_MS = 130;
+const SELECT_TAU_MS = 320;
+
 const CAMERA_ZOOM_ALTITUDE = 1.3;
 
 function lerp(a: number, b: number, t: number) {
@@ -64,6 +81,15 @@ function mixRgba(from: RGBA, to: RGBA, t: number) {
     b: lerp(from.b, to.b, t),
     a: lerp(from.a, to.a, t),
   });
+}
+// Frame-rate-independent exponential approach toward `target`, using time-
+// constant `tauMs` (~63% of the remaining distance closes every tauMs).
+// Retargeting mid-flight (e.g. hover → selected) just continues from the
+// current value with no snap, unlike a fixed-duration tween restarted at 0.
+function approach(current: number, target: number, dtMs: number, tauMs: number) {
+  if (dtMs <= 0) return current;
+  const rate = 1 - Math.exp(-dtMs / tauMs);
+  return current + (target - current) * rate;
 }
 
 function normalize(v: { x: number; y: number; z: number }) {
@@ -105,13 +131,17 @@ export default function LandingGlobe({ onContinentSelect }: LandingGlobeProps) {
   // back, unmounting/remounting the landmass label mid-transition.
   const isLockedRef = useRef(false);
 
-  // Single 0→1 progress value driving the cap/stroke/altitude fade whenever
-  // activeContinent changes to a new target. Only "fades into" a highlight,
-  // per spec — leaving a highlight (activeContinent -> a different value or
-  // null) resets instantly, which is a deliberate simplification.
-  const [fadeProgress, setFadeProgress] = useState(1);
-  const fadeRafRef = useRef<number | null>(null);
-  const fadeStartRef = useRef<number | null>(null);
+  // Per-continent 0→1 highlight strength (see HOVER_STRENGTH/approach above),
+  // eased continuously toward whichever target currently applies.
+  // strengthMapRef is the mutable accumulator the animation loop writes to
+  // every frame; `strengths` mirrors it into state (a fresh Map each frame)
+  // so the memoized polygon accessors below both read live values and get a
+  // new function identity each frame, which is what causes three-globe to
+  // re-evaluate them and repaint.
+  const strengthMapRef = useRef<Map<ContinentId, number>>(new Map());
+  const [strengths, setStrengths] = useState<Map<ContinentId, number>>(() => new Map());
+  const strengthRafRef = useRef<number | null>(null);
+  const strengthLastTsRef = useRef<number | null>(null);
 
   const [labelPos, setLabelPos] = useState<LabelPosition | null>(null);
 
@@ -170,60 +200,85 @@ export default function LandingGlobe({ onContinentSelect }: LandingGlobeProps) {
     trySetup(60); // ~1s at 60fps
   }, [stopAutoRotate]);
 
-  // Drives the cap/stroke/altitude fade-in. Runs only on continent-boundary
-  // crossings (not on every mousemove within one continent), bounded to
-  // HIGHLIGHT_FADE_MS.
-  useEffect(() => {
-    if (fadeRafRef.current !== null) cancelAnimationFrame(fadeRafRef.current);
-    if (!activeContinent) {
-      setFadeProgress(1);
-      return;
-    }
+  const targetStrength = useCallback(
+    (continent: ContinentId): number => {
+      if (continent === lockedContinent) return 1;
+      if (!lockedContinent && continent === hoveredContinent) return HOVER_STRENGTH;
+      return 0;
+    },
+    [lockedContinent, hoveredContinent],
+  );
 
-    fadeStartRef.current = null;
-    setFadeProgress(0);
+  // Drives every continent's highlight strength toward its current target
+  // every frame. Restarts whenever hoveredContinent/lockedContinent change,
+  // but — because approach() picks up from the live current value rather
+  // than resetting to 0 — a continent already mid-fade (e.g. easing into
+  // hover) keeps moving smoothly toward its new target (e.g. full selected)
+  // rather than snapping. Stops scheduling frames once every continent has
+  // settled within epsilon of its target, rather than running forever.
+  useEffect(() => {
+    if (strengthRafRef.current !== null) cancelAnimationFrame(strengthRafRef.current);
+    strengthLastTsRef.current = null;
 
     const tick = (now: number) => {
-      if (fadeStartRef.current === null) fadeStartRef.current = now;
-      const t = Math.min(1, (now - fadeStartRef.current) / HIGHLIGHT_FADE_MS);
-      setFadeProgress(t);
-      if (t < 1) fadeRafRef.current = requestAnimationFrame(tick);
+      const dt = now - (strengthLastTsRef.current ?? now);
+      strengthLastTsRef.current = now;
+
+      let animating = false;
+      for (const continent of CONTINENT_IDS) {
+        const target = targetStrength(continent);
+        const current = strengthMapRef.current.get(continent) ?? 0;
+        const tau = target >= 1 ? SELECT_TAU_MS : HOVER_TAU_MS;
+        const next = approach(current, target, dt, tau);
+        strengthMapRef.current.set(continent, next);
+        if (Math.abs(next - target) > 0.001) animating = true;
+      }
+      setStrengths(new Map(strengthMapRef.current));
+
+      strengthRafRef.current = animating ? requestAnimationFrame(tick) : null;
     };
-    fadeRafRef.current = requestAnimationFrame(tick);
+    strengthRafRef.current = requestAnimationFrame(tick);
 
     return () => {
-      if (fadeRafRef.current !== null) cancelAnimationFrame(fadeRafRef.current);
+      if (strengthRafRef.current !== null) cancelAnimationFrame(strengthRafRef.current);
     };
-  }, [activeContinent]);
+  }, [targetStrength]);
 
-  // Memoized on activeContinent + fadeProgress only: moving the cursor
-  // between countries within the same continent changes neither, so
-  // three-globe re-evaluates the (cheap) accessor without ever touching
-  // polygonsData itself, which stays the same array for the app's lifetime.
+  // Re-created every settling animation frame (via strengths, a fresh Map
+  // each frame) so three-globe re-evaluates them and repaints; otherwise the
+  // same reference-based memoization pattern the rest of this file relies
+  // on — polygonsData itself is never touched, only these accessors.
   const polygonCapColor = useCallback(
     (feature: object) => {
       const continent = (feature as CountryFeature).properties.CONTINENT;
-      return continent === activeContinent ? mixRgba(REST_CAP, HIGHLIGHT_CAP, fadeProgress) : rgbaStr(REST_CAP);
+      if (!isContinentId(continent)) return rgbaStr(REST_CAP);
+      const s = strengths.get(continent) ?? 0;
+      return s <= 0 ? rgbaStr(REST_CAP) : mixRgba(REST_CAP, ACCENT_CAP, s);
     },
-    [activeContinent, fadeProgress],
+    [strengths],
   );
 
   const polygonStrokeColor = useCallback(
     (feature: object) => {
       const continent = (feature as CountryFeature).properties.CONTINENT;
-      return continent === activeContinent
-        ? mixRgba(REST_STROKE, HIGHLIGHT_STROKE, fadeProgress)
-        : rgbaStr(REST_STROKE);
+      if (!isContinentId(continent)) return rgbaStr(REST_STROKE);
+      const s = strengths.get(continent) ?? 0;
+      return s <= 0 ? rgbaStr(REST_STROKE) : mixRgba(REST_STROKE, ACCENT_STROKE, s);
     },
-    [activeContinent, fadeProgress],
+    [strengths],
   );
 
   const polygonAltitude = useCallback(
     (feature: object) => {
       const continent = (feature as CountryFeature).properties.CONTINENT;
-      return continent === activeContinent ? lerp(REST_ALTITUDE, HIGHLIGHT_ALTITUDE, fadeProgress) : REST_ALTITUDE;
+      if (!isContinentId(continent)) return REST_ALTITUDE;
+      const s = strengths.get(continent) ?? 0;
+      // No lift at all until strength passes the hover ceiling — see
+      // ALTITUDE_LIFT_START.
+      const liftT = Math.max(0, (s - ALTITUDE_LIFT_START) / (1 - ALTITUDE_LIFT_START));
+      return liftT <= 0 ? REST_ALTITUDE : lerp(REST_ALTITUDE, SELECTED_ALTITUDE, liftT);
     },
-    [activeContinent, fadeProgress],
+    [strengths],
   );
 
   const updateLabelPosition = useCallback(() => {
@@ -350,7 +405,7 @@ export default function LandingGlobe({ onContinentSelect }: LandingGlobeProps) {
             initial={false}
             exit={{ opacity: 0, y: -8 }}
             transition={{ duration: 0.3, ease: "easeOut" }}
-            className="pointer-events-none absolute left-6 top-6 select-none sm:left-10 sm:top-10"
+            className="pointer-events-none absolute left-6 top-24 select-none sm:left-10 sm:top-28"
           >
             <div className="rounded-xl border border-white/10 bg-black/30 px-5 py-4 backdrop-blur-sm">
               <h1 className="text-lg font-semibold tracking-tight text-zinc-50 sm:text-xl">
@@ -372,11 +427,18 @@ export default function LandingGlobe({ onContinentSelect }: LandingGlobeProps) {
             animate={{ opacity: labelPos.visible ? 1 : 0 }}
             exit={{ opacity: 0 }}
             transition={{ duration: 0.18, ease: "easeOut" }}
-            style={{ position: "absolute", left: labelPos.x, top: labelPos.y, transform: "translate(-50%, -140%)" }}
-            className="pointer-events-none flex select-none items-center gap-2 whitespace-nowrap rounded-xl border border-white/10 bg-black/30 px-4 py-2 backdrop-blur-sm"
+            style={{ position: "absolute", left: labelPos.x, top: labelPos.y, transform: "translate(-50%, -50%)" }}
+            className="pointer-events-none flex select-none flex-col items-center gap-1.5 whitespace-nowrap"
           >
-            <span className="h-1.5 w-1.5 rounded-full bg-[#5ad1e0]" />
-            <span className="text-lg font-semibold tracking-tight text-zinc-50">{activeContinent}</span>
+            <span className="h-2 w-2 rounded-full bg-[#5ad1e0] shadow-[0_0_10px_3px_rgba(90,209,224,0.7)]" />
+            <span
+              className="text-2xl font-bold tracking-tight text-white sm:text-3xl"
+              style={{
+                textShadow: "0 2px 14px rgba(0,0,0,0.9), 0 1px 3px rgba(0,0,0,0.95), 0 0 26px rgba(90,209,224,0.4)",
+              }}
+            >
+              {activeContinent}
+            </span>
           </motion.div>
         )}
       </AnimatePresence>

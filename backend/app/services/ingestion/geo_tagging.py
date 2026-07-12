@@ -12,14 +12,15 @@ _CONTINENT_CODE_TO_ID = {
     "SA": "south-america",
 }
 
-# scope_service.REGIONS/CONTINENT_FIPS_MAP use FIPS 10-4 codes for the 9 curated
+# scope_service.REGIONS/CONTINENT_FIPS_MAP use FIPS 10-4 codes for the 10 curated
 # market-index countries. Everything ingested here is tagged with ISO 3166-1 alpha-2
 # (via pycountry, which covers all ~200 countries generically). This crosswalk is the
-# only bridge between the two systems, and it only needs to cover those 9 FIPS codes -
+# only bridge between the two systems, and it only needs to cover those 10 FIPS codes -
 # they're the only FIPS values this app ever emits (scope_service.FIPS_LABELS.keys()).
 FIPS_TO_ISO2 = {
     "US": "US", "FR": "FR", "GM": "DE", "UK": "GB",
     "JA": "JP", "HK": "HK", "BR": "BR", "CA": "CA", "AS": "AU",
+    "SF": "ZA",
 }
 
 

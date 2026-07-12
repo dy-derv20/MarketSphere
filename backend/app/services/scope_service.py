@@ -20,23 +20,30 @@ REGIONS = [
     {"region": "Brazil (Bovespa)", "country_fips": "BR", "yf_ticker": "^BVSP", "tv_symbol": "BMFBOVESPA:IBOV"},
     {"region": "Canada (TSX)", "country_fips": "CA", "yf_ticker": "^GSPTSE", "tv_symbol": "TSX:TSX"},
     {"region": "Australia (ASX 200)", "country_fips": "AS", "yf_ticker": "^AXJO", "tv_symbol": "ASX:XJO"},
+    # Verified live against yfinance before adding — ^J203.JO (FTSE/JSE All Share
+    # Index, Johannesburg Stock Exchange) returns real daily OHLCV, unlike several
+    # other African-index tickers tried first (^EGX30, ^NGSEINDX both 404/delisted
+    # on Yahoo). Closes the previously-documented "Africa has zero regions" gap.
+    {"region": "South Africa (FTSE/JSE All Share)", "country_fips": "SF", "yf_ticker": "^J203.JO", "tv_symbol": "JSE:J203"},
 ]
 
 FIPS_LABELS = {
     "US": "United States", "FR": "France", "GM": "Germany", "UK": "United Kingdom",
     "JA": "Japan", "HK": "Hong Kong", "BR": "Brazil", "CA": "Canada", "AS": "Australia",
+    "SF": "South Africa",
 }
 
 # Which registry entries belong to each continent. None = the borderless Europe (Euro Stoxx 50)
-# entry. Continents with no registry coverage yet (e.g. Africa) resolve to an empty panel list —
-# graceful degradation, not an error, consistent with the rest of the build.
+# entry. Africa now has one curated entry (South Africa) — previously resolved to an empty
+# panel list (graceful degradation, not an error), kept that pattern for any future continent
+# gaps rather than assuming every continent must have coverage.
 CONTINENT_FIPS_MAP = {
     "europe": [None, "FR", "GM", "UK"],
     "asia": ["JA", "HK"],
     "north-america": ["US", "CA"],
     "south-america": ["BR"],
     "oceania": ["AS"],
-    "africa": [],
+    "africa": ["SF"],
 }
 
 
