@@ -3,8 +3,10 @@
 import { motion } from "framer-motion";
 import type { ContinentId } from "@/types/globe";
 import { CONTINENT_TRANSITION_MS } from "@/lib/transitionTiming";
+import { useScopeConfig } from "@/lib/useScopeConfig";
 import MarketSection from "@/components/panel/MarketSection";
 import NewsSection from "@/components/panel/NewsSection";
+import { ErrorState, SkeletonRows } from "@/components/panel/SectionState";
 
 const PANEL_WIDTH = 300;
 
@@ -13,6 +15,8 @@ interface PanelListProps {
 }
 
 export default function PanelList({ continentId }: PanelListProps) {
+  const scopeState = useScopeConfig(continentId);
+
   return (
     // Outer element animates *width* (not a transform) from 0 -> PANEL_WIDTH,
     // matching CONTINENT_TRANSITION_MS. Because this is a real flex sibling
@@ -36,10 +40,23 @@ export default function PanelList({ continentId }: PanelListProps) {
         style={{ width: PANEL_WIDTH }}
         className="h-full overflow-y-auto px-4 py-6"
       >
-        <div className="flex flex-col gap-6">
-          <MarketSection continentId={continentId} />
-          <NewsSection continentId={continentId} />
-        </div>
+        {scopeState.status === "loading" && (
+          <div className="flex flex-col gap-6">
+            <SkeletonRows count={3} />
+            <SkeletonRows count={5} />
+          </div>
+        )}
+
+        {scopeState.status === "error" && (
+          <ErrorState message="Couldn't load this region. Check your connection and try again." />
+        )}
+
+        {scopeState.status === "ready" && (
+          <div className="flex flex-col gap-6">
+            <MarketSection panels={scopeState.panels.filter((p) => p.type === "market")} />
+            <NewsSection panels={scopeState.panels.filter((p) => p.type === "news")} label={continentId} />
+          </div>
+        )}
       </motion.div>
     </motion.aside>
   );

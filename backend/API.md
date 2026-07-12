@@ -25,7 +25,7 @@ uvicorn app.main:app --reload --port 8000
 python -m scripts.ingest_news --days 3   # populates news_articles — /api/news returns nothing until this runs
 ```
 
-**Gemini quota note:** the free-tier key used during this build hit a **hard daily cap of 20 requests** on `gemini-flash-latest` (`gemini-3.5-flash`) — not a per-minute throttle, a full-day lockout once exhausted. Check quota/billing on whichever key is used for the actual demo before relying on `/api/chat` working for the full session; `gemini-pro-latest` additionally has **zero** free-tier quota on the key tested here.
+**Gemini quota note:** the free-tier key used during earlier testing hit a **hard daily cap of 20 requests** on `gemini-flash-latest` (`gemini-3.5-flash`) — not a per-minute throttle, a full-day lockout once exhausted (`google.genai.errors.ClientError`, 429, `quotaId: GenerateRequestsPerDayPerProjectPerModel-FreeTier`). **The project's key has since moved to a paid tier and this is no longer an active blocker** — leaving this note in place since it's still real, useful context if a different/fresh key is ever swapped in for a demo.
 
 ## Routers
 
@@ -83,8 +83,8 @@ All params optional; no params = world scope, all sources mixed. `country` accep
 ```
 `404` if `session_id` unknown. `503` if Gemini is unavailable (quota, key, transient) — safe to retry, nothing is persisted on failure. Response shape depends on classified intent:
 
-- **`answer`** — `text/event-stream` (SSE). Each event: `data: {"type": "text", "text": "..."}` (repeated) then `data: {"type": "done", "citations": [...]}`, or `data: {"type": "error", "message": "..."}` if the stream fails mid-way. Grounded in DB-backed news (no live search tool — see `BACKEND_ARCHITECTURE.md` deviation note if added later).
-- **`build`** — plain JSON: `{ "action": "build", "target": "workspace", "config": {...PanelConfig}, "switch_view": true, "notes": "Skipped: 'Korea' isn't a recognized country"|null }`. Every `country`/`symbol` is registry-validated with one bounded repair retry before falling back to dropping the panel.
+- **`answer`** — `text/event-stream` (SSE). Each event: `data: {"type": "text", "text": "..."}` (repeated) then `data: {"type": "done", "citations": [...]}`, or `data: {"type": "error", "message": "..."}` if the stream fails mid-way. Grounded in DB-backed news (no live search tool — see `BACKEND_ARCHITECTURE.md` deviation note if added later). Country/continent context extracted from the message resolves against **any real country** (`entity_resolver.resolve_country_for_news`, ~200 countries via `pycountry`) or a continent id/demonym (`resolve_continent` — "African", "Asian", etc.), not just the 9 flagship market-index countries — falls back to unfiltered world news only if neither resolves.
+- **`build`** — plain JSON: `{ "action": "build", "target": "workspace", "config": {...PanelConfig}, "switch_view": true, "notes": "Skipped: 'Wakanda' isn't a recognized country"|null }`. News panels accept any real country or continent id (same broad resolution as `answer`, above) — **not** limited to the market registry. Market panels stay restricted to the 10 registry symbols/tickers, since that's a real data-availability limit, not a resolution gap: every `symbol` is registry-validated with one bounded repair retry before falling back to dropping the panel.
 - **`analyze`** — plain JSON: `{ "action": "analyze", "text": "hedged narrative paragraph", "evidence": { "articles_used": ["url", ...], "tone_trend": 0.12, "price_change_pct": -1.4 } | null }`. `evidence` is `null` if the company name couldn't be resolved (curated ~34-company map — see `entity_resolver.py`).
 
 ### `POST /api/layouts`
@@ -101,6 +101,10 @@ Fetch one. `404` if unknown.
 
 ## Known gaps / next steps
 
-- `/api/chat` has not had a full live end-to-end pass across all three intents through actual HTTP due to the daily quota cap — each piece (classifier, build, answer, analyze) is independently verified working with real data, and the route's non-Gemini mechanics (session lookup, 404s, validation, error handling) are verified, but the full request→response chain for each intent through the live route needs one more pass once quota resets.
 - Guardian's section→continent mapping (`guardian_client.py`) is conservative and was built without live network access to verify against Guardian's actual tag API — worth double-checking.
-- Country/continent detection for `answer`'s context currently only resolves exact country names/codes in `entity_resolver.COUNTRY_FIPS_LOOKUP` (9 countries) — adjectival forms like "Japanese" won't resolve, falling back to unfiltered world news rather than erroring.
+- Market panels (`build` intent and `GET /api/scope`) are hard-limited to the 10 registry symbols — this is a real data-availability gap (no ticker/index data source for most countries), not a resolution bug like the news one below was. Africa specifically has zero market registry entries.
+
+### Fixed since last pass (kept here briefly for anyone tracking against an older copy of this doc)
+
+- ~~Country/continent detection for `answer`'s context only resolves the 9 flagship countries~~ — fixed. Both `answer` and `build` now resolve any real country (`resolve_country_for_news`) or continent id/demonym (`resolve_continent`), not just the market-index 9. Verified live: "What's happening in African markets" now grounds its response in real ingested Nigeria/Egypt articles instead of falling back to unfiltered world news; "show me Nigeria news" now returns a populated panel (`country: "NG"`) instead of an empty one.
+- ~~`/api/chat` had not had a full live end-to-end pass across all three intents~~ — done, all three (`answer` streamed, `build`, `analyze`) verified via real HTTP requests returning correct shapes with real data, after the Gemini key was moved off the free tier (was hitting the 20 req/day cap during earlier testing).

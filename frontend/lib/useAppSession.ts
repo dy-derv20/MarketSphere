@@ -2,14 +2,16 @@
 
 import { useEffect, useRef, useState } from "react";
 import { createSession, getSession } from "@/lib/api/session";
+import type { ChatMessage } from "@/types/api";
 
 const STORAGE_KEY = "marketsphere_session_id";
 
 export type SessionStatus = "loading" | "ready" | "error";
 
-export function useAppSession(): { sessionId: string | null; status: SessionStatus } {
+export function useAppSession(): { sessionId: string | null; status: SessionStatus; initialMessages: ChatMessage[] } {
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [status, setStatus] = useState<SessionStatus>("loading");
+  const [initialMessages, setInitialMessages] = useState<ChatMessage[]>([]);
   const initRef = useRef(false);
 
   useEffect(() => {
@@ -22,6 +24,7 @@ export function useAppSession(): { sessionId: string | null; status: SessionStat
         try {
           const session = await getSession(stored);
           setSessionId(session.session_id);
+          setInitialMessages(session.messages);
           setStatus("ready");
           return;
         } catch {
@@ -41,5 +44,5 @@ export function useAppSession(): { sessionId: string | null; status: SessionStat
     })();
   }, []);
 
-  return { sessionId, status };
+  return { sessionId, status, initialMessages };
 }

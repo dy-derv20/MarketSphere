@@ -1,33 +1,54 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { getMarket } from "@/lib/api/market";
-import type { MarketSeries } from "@/types/api";
+import { getMarketData } from "@/lib/api/market";
+import type { MarketPanelParams, OhlcvBar, Panel } from "@/types/api";
+
+export interface HydratedMarketPanel {
+  panel: Panel;
+  ohlcv: OhlcvBar[];
+}
 
 export type MarketState =
   | { status: "loading" }
   | { status: "error"; error: unknown }
-  | { status: "ready"; series: MarketSeries[] };
+  | { status: "ready"; series: HydratedMarketPanel[] };
 
-// /api/market is world-scope only and returns all 10 registry regions in
-// one call (no per-symbol filtering) — fetched once and reused for every
-// continent switch, same pattern as useRegions.
-export function useMarket(): MarketState {
+// Takes the market-type panels from the current scopeConfig (see
+// useScopeConfig) and hydrates each one's OHLCV individually via
+// /api/market?symbol=... — one call per panel, run in parallel. A single
+// bad symbol degrades that one chart to an empty series rather than
+// failing the whole section (matches the backend's own fail-soft OHLCV
+// behavior for unknown symbols).
+export function useMarket(marketPanels: Panel[]): MarketState {
   const [state, setState] = useState<MarketState>({ status: "loading" });
 
   useEffect(() => {
     let cancelled = false;
-    getMarket()
-      .then((res) => {
-        if (!cancelled) setState({ status: "ready", series: res.series });
-      })
-      .catch((error) => {
-        if (!cancelled) setState({ status: "error", error });
-      });
+    if (marketPanels.length === 0) {
+      setState({ status: "ready", series: [] });
+      return;
+    }
+    setState({ status: "loading" });
+
+    Promise.allSettled(
+      marketPanels.map(async (panel) => {
+        const params = panel.params as MarketPanelParams;
+        const res = await getMarketData(params.symbol, params.range, params.interval);
+        return { panel, ohlcv: res.ohlcv };
+      }),
+    ).then((results) => {
+      if (cancelled) return;
+      const series: HydratedMarketPanel[] = results.map((r, i) =>
+        r.status === "fulfilled" ? r.value : { panel: marketPanels[i], ohlcv: [] },
+      );
+      setState({ status: "ready", series });
+    });
+
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [marketPanels]);
 
   return state;
 }

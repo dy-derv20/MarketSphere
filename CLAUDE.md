@@ -66,39 +66,69 @@ all frontend commands from inside `frontend/`, not the repo root.
     │                                   only — see Phase C notes for what's authoritative)
     └── CLAUDE.md                    — this file
 
+## ⚠️ Backend moved to v2 — this file's Phase D/E/F notes describe the v1 contract
+
+Everything below "Definition of Done" for Phases D/E/F was written and verified
+against the **v1** backend API. The backend has since been rewritten (`API.md`
+is the authoritative, current contract — read that before touching any
+`lib/api/*` file). Left the Phase D/E/F narrative in place as a historical
+record of what was actually verified at the time, not as current truth. The
+practical differences that broke the frontend integration, all now fixed:
+
+- `POST /api/session` response shape changed (`scopeConfig` instead of
+  `current_scope`/snapshots); `GET /api/session/{id}` was removed then
+  re-added with a different shape (now includes persisted chat `messages`).
+- `PUT /api/scope/{session_id}` is gone — scope is now `GET /api/scope?region=`,
+  returning a dynamic `scopeConfig.panels[]` (news + market panels, each with
+  its own fetch params) instead of a fixed `{level, id, label}`.
+- `GET /api/news`/`GET /api/market` now take real query params
+  (`continent`/`country`/`max` and `symbol`/`range`/`interval` respectively)
+  and are meant to be called **per panel**, not once globally. `/api/market`
+  now 422s without a `symbol` — this was the single biggest breakage, it
+  blocked the Market section entirely on every continent.
+- `POST /api/chat/{session_id}` is now `POST /api/chat` (`session_id` moved
+  into the body), and the response is no longer a fixed `{role, content,
+  created_at}` — it's either an SSE stream (`answer` intent) or one of two
+  JSON shapes (`build`/`analyze` intent) depending on what the backend
+  classified the message as.
+- News/Market are no longer world-scope-only — the backend now returns real
+  per-continent (and per-country) data, including Africa, which previously
+  had zero coverage. The "Known limitations" entries about this below are
+  now stale for News/Market specifically (Africa's *market* registry gap is
+  still real — see backend `API.md` — but News now covers all 6 continents).
+- `POST /api/chat`'s `answer`/`build` intents used to only resolve the 9
+  flagship market-index countries (US/FR/GM/UK/JA/HK/BR/CA/AS) for news
+  context/panels — a chat query like "African markets" or "Nigeria news"
+  silently fell back to unfiltered world news or an empty panel, no error.
+  Fixed backend-side: both now resolve any real country (~200, via
+  `pycountry`) or a continent id/demonym ("African" → `africa`). If
+  `FloatingChat` or future panel-building UI was built around/tested
+  against that narrower behavior, it's worth a quick re-check — the
+  response shapes are unchanged, only which queries succeed with real
+  (non-empty, non-generic) results.
+
 ## Running the backend locally
 
-Not runnable as handed off — no `.env` existed (only `.env.example`), no
-Python venv, no local PostgreSQL. `DATABASE_URL` has no default and the
-session/chat models use Postgres-specific `UUID`/`JSONB` column types (not
-swappable for SQLite without editing backend model code, which is out of
-frontend scope). `GEMINI_API_KEY` also has no default, so the whole FastAPI
-app fails at import time without one — this blocks session/scope/news/market
-too, not just chat. `NEWS_API_KEY`/`MARKET_API_KEY` are harmless to leave
-blank: the real `news_service.py` (GDELT, no auth) and `market_service.py`
-(yfinance, no auth) code doesn't actually read either one.
+`DATABASE_URL` has no default and the session/chat/news/market models use
+Postgres-specific `UUID`/`JSONB` column types (not swappable for SQLite
+without editing backend model code, out of frontend scope). `GEMINI_API_KEY`
+also has no default, so the whole FastAPI app fails at import time without
+one — this blocks session/scope/news/market too, not just chat.
+`NEWS_API_KEY`/`MARKET_API_KEY` are unused/legacy; `GUARDIAN_API_KEY` and
+`ALPHA_VANTAGE_API_KEY` are the real new ones (news ingestion, see below) —
+harmless blank, but those two sources contribute zero articles without them.
 
-Set up once per machine:
+The backend now ships a `docker-compose.yml` for Postgres — this is the
+current recommended path, not the manual `brew`/role-creation setup this
+section used to document (that was against `.env.example`'s old `user`/
+`password` creds, which no longer match — current `.env.example` uses
+`marketsphere`/`marketsphere`, matching the compose file):
 ```
-brew install postgresql@16
-brew services start postgresql@16
-/opt/homebrew/opt/postgresql@16/bin/createdb marketsphere
 cd backend
+docker compose up -d      # if you already run Postgres locally on :5432, stop it first or remap the container port
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-```
-`.env` currently in place uses the literal `user`/`password` credentials
-from `.env.example` (not my own local trust-auth setup from earlier in this
-project) — a Postgres role matching those credentials was created locally
-and granted table/sequence/default privileges on the `marketsphere` DB, so
-the file works exactly as given rather than needing to be edited:
-```sql
-CREATE ROLE "user" WITH LOGIN PASSWORD 'password';
-GRANT ALL PRIVILEGES ON DATABASE marketsphere TO "user";
-GRANT ALL ON SCHEMA public TO "user";
-GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO "user";
-GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO "user";
-ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO "user";
+cp .env.example .env      # fill in GEMINI_API_KEY at minimum
 ```
 **`CORS_ORIGINS` must not have a trailing slash** (`http://localhost:3000`,
 not `.../3000/`) — a trailing slash silently breaks every frontend request:
@@ -115,6 +145,13 @@ verify an actual cross-origin request (`curl -i -X GET
 localhost:8000/api/health -H "Origin: http://localhost:3000"` and check
 for the `access-control-allow-origin` response header) — `/api/health`
 alone will pass even with CORS totally broken.
+
+**`GET /api/news` returns nothing until you run ingestion — this is new in
+v2.** News is now DB-backed (GDELT + Guardian + Alpha Vantage), not a live
+call per request. Run `python -m scripts.ingest_news --days 3` after the
+server's up (or anytime after) to populate it; re-running is safe/idempotent.
+Without this step every continent's News section will correctly show its
+real empty state, not an error — but it'll look broken if you don't know why.
 
 **Gemini free-tier quota: 20 requests/day, hard daily cap** (confirmed via
 the `quotaId: GenerateRequestsPerDayPerProjectPerModel-FreeTier` in the
@@ -264,6 +301,16 @@ and preserves orientation throughout.
   without backend log access. Worth an `except (ServerError, ClientError)`
   fix backend-side, or catching `ClientError` and checking for 429
   specifically to return a friendlier "rate limited" message.
+  **Fixed since this was written** — current `chat.py` catches
+  `google.genai.errors.APIError` (the shared base class for both
+  `ServerError` and `ClientError`), not just `ServerError`. Verified live:
+  a real quota-exhausted request now returns a clean `503`
+  (`{"detail": "Gemini is temporarily unavailable, please try again."}`)
+  with correct CORS headers, not an unhandled exception. Not sure when
+  this landed relative to when this note was written — worth a quick
+  browser re-check if the misleading-CORS-error symptom is still assumed
+  anywhere in frontend error handling, but the backend side is confirmed
+  fine now.
 
 ### Phase F — Market Panel: Own Chart [DONE]
 Followed the frontend spec in `frontend/FRONTEND_MARKET_PANEL.md`. Replaces
@@ -384,6 +431,11 @@ form, not v4's `addCandlestickSeries()`), fed by real
   inline error state was verified against the *real* failure this quota
   produces — but be aware the demo could hit this live if `/api/chat` is
   used more than ~20 times in a day on the same API key.
+  **Resolved as of the current key** — the project moved to a paid Gemini
+  tier, so this specific cap is no longer an active demo risk. Leaving
+  this entry (not struck through) since the inline-error-state behavior
+  it describes is still real and worth knowing if a different/free key
+  ever gets swapped in.
 - **TradingView `querySelector` console errors in `npm run dev` only.**
   React Strict Mode's dev-only double-invoke (mount → cleanup → mount)
   races against `TradingViewMiniWidget`'s async external `<script>` —

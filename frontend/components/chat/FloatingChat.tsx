@@ -5,6 +5,7 @@ import { AnimatePresence, motion } from "framer-motion";
 import { AlertCircle, Send, Sparkles, X } from "lucide-react";
 import { sendChatMessage } from "@/lib/api/chat";
 import { ApiError } from "@/lib/api/http";
+import type { AnswerStreamEvent, ChatMessage } from "@/types/api";
 
 interface DisplayMessage {
   id: string;
@@ -29,15 +30,26 @@ const SPRING = { type: "spring" as const, stiffness: 320, damping: 30 };
 
 interface FloatingChatProps {
   sessionId: string | null;
+  initialMessages?: ChatMessage[];
 }
 
-export default function FloatingChat({ sessionId }: FloatingChatProps) {
+export default function FloatingChat({ sessionId, initialMessages = [] }: FloatingChatProps) {
   const [isOpen, setIsOpen] = useState(false);
   const [messages, setMessages] = useState<DisplayMessage[]>([]);
   const [input, setInput] = useState("");
   const [isSending, setIsSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
+
+  // initialMessages arrives asynchronously once useAppSession's restore
+  // fetch resolves (empty on first render, populated moments later if the
+  // backend had saved history for this session_id) - seed the visible
+  // thread from it so a reload doesn't silently drop the conversation.
+  useEffect(() => {
+    if (initialMessages.length > 0) {
+      setMessages(initialMessages.map((m) => ({ id: newId(), role: m.role, content: m.content })));
+    }
+  }, [initialMessages]);
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
@@ -54,8 +66,38 @@ export default function FloatingChat({ sessionId }: FloatingChatProps) {
     setIsSending(true);
 
     try {
-      const reply = await sendChatMessage(sessionId, text);
-      setMessages((prev) => [...prev, { id: newId(), role: "model", content: reply.content }]);
+      const result = await sendChatMessage({ sessionId, message: text });
+
+      if (result.kind === "stream") {
+        const modelId = newId();
+        setMessages((prev) => [...prev, { id: modelId, role: "model", content: "" }]);
+        let streamError: AnswerStreamEvent | null = null;
+
+        for await (const event of result.events) {
+          if (event.type === "text") {
+            setMessages((prev) =>
+              prev.map((m) => (m.id === modelId ? { ...m, content: m.content + event.text } : m)),
+            );
+          } else if (event.type === "error") {
+            streamError = event;
+          }
+          // "done" carries citations - not surfaced in the UI yet, ignored here.
+        }
+
+        if (streamError) {
+          // Interrupted mid-stream: drop the partial bubble rather than leaving
+          // a truncated, unlabeled reply, and show the real error instead.
+          setMessages((prev) => prev.filter((m) => m.id !== modelId));
+          setError(streamError.message);
+        }
+      } else {
+        const { data } = result;
+        const content =
+          data.action === "build"
+            ? (data.notes ?? `Updated your workspace with ${data.config.panels.length} panel(s).`)
+            : data.text;
+        setMessages((prev) => [...prev, { id: newId(), role: "model", content }]);
+      }
     } catch (err) {
       setError(errorMessage(err));
     } finally {

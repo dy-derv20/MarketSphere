@@ -1,10 +1,6 @@
 import { apiRequest } from "@/lib/api/http";
-import type { Scope, ScopeLevel } from "@/types/api";
+import type { ScopeConfigResponse } from "@/types/api";
 import type { ContinentId } from "@/types/globe";
-
-export function setScope(sessionId: string, level: ScopeLevel, id: string): Promise<Scope> {
-  return apiRequest<Scope>(`/api/scope/${sessionId}`, { method: "PUT", body: { level, id } });
-}
 
 // Backend scope ids are lowercase-hyphenated (see backend/app/services/
 // scope_service.py's CONTINENTS dict), distinct from our Title-Case
@@ -18,6 +14,14 @@ const CONTINENT_TO_SCOPE_ID: Record<ContinentId, string> = {
   Oceania: "oceania",
 };
 
-export function setScopeForContinent(sessionId: string, continentId: ContinentId): Promise<Scope> {
-  return setScope(sessionId, "continent", CONTINENT_TO_SCOPE_ID[continentId]);
+export function getScope(region: string): Promise<ScopeConfigResponse> {
+  return apiRequest<ScopeConfigResponse>(`/api/scope?region=${encodeURIComponent(region)}`);
+}
+
+export function getScopeForContinent(continentId: ContinentId): Promise<ScopeConfigResponse> {
+  return getScope(CONTINENT_TO_SCOPE_ID[continentId]);
+}
+
+export function getWorldScope(): Promise<ScopeConfigResponse> {
+  return getScope("world");
 }

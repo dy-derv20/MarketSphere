@@ -1,21 +1,18 @@
 "use client";
 
-import type { ContinentId } from "@/types/globe";
+import type { Panel } from "@/types/api";
 import { useNews } from "@/lib/useNews";
 import NewsRow from "@/components/panel/NewsRow";
 import { EmptyState, ErrorState, SkeletonRows } from "@/components/panel/SectionState";
 
-// continentId is accepted (not used to filter yet) so the call site in
-// PanelList doesn't change once the backend supports per-continent news —
-// see CLAUDE.md's known blocker. /api/news is world-scope only right now.
-export default function NewsSection({ continentId: _continentId }: { continentId: ContinentId }) {
-  const newsState = useNews();
+export default function NewsSection({ panels, label }: { panels: Panel[]; label: string }) {
+  const newsState = useNews(panels);
 
   return (
     <section>
       <div className="mb-2 flex items-baseline justify-between px-1">
         <h2 className="text-xs font-medium uppercase tracking-wider text-[#5b6472]">News</h2>
-        <span className="text-[10px] text-[#5b6472]/70">World markets</span>
+        <span className="text-[10px] text-[#5b6472]/70">{label}</span>
       </div>
 
       {newsState.status === "loading" && <SkeletonRows count={5} />}

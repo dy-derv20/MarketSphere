@@ -3,24 +3,28 @@ from pydantic import BaseModel
 
 from app.schemas.classifier import BuildOp, ClassifierEntities
 from app.schemas.panel import MarketParams, NewsParams, Panel, PanelConfig, PanelType, new_panel_id
-from app.services.entity_resolver import resolve_country_fips
+from app.services.entity_resolver import resolve_continent, resolve_country_for_news
 from app.services.gemini_service import generate_with_retry
-from app.services.scope_service import REGIONS
+from app.services.scope_service import CONTINENTS, REGIONS
 
 MODEL = "gemini-flash-latest"
 
-VALID_COUNTRIES = sorted({r["country_fips"] for r in REGIONS if r["country_fips"]})
 VALID_SYMBOLS = sorted({r["yf_ticker"] for r in REGIONS})
+VALID_CONTINENTS = sorted(CONTINENTS.keys())
 
 SYSTEM_INSTRUCTION = (
     "You compose a panel-based workspace for a financial news/markets dashboard. Given the "
     "user's request and (if provided) the current workspace, return the FULL resulting set of "
-    "panels (not a diff). Each panel is either type 'news' (params: country - a valid country "
-    "code from the allowed list, or omit entirely for global/world news; query; timespan; max) "
-    "or type 'market' (params: symbol - a valid ticker from the allowed list; range; interval). "
-    f"Allowed country codes: {VALID_COUNTRIES}. Allowed market symbols: {VALID_SYMBOLS}. "
-    "If the user asks for a country or company not in these lists, omit that panel rather than "
-    "inventing a code or symbol. Give each panel a short display title and a one-line rationale."
+    "panels (not a diff). Each panel is either type 'news' or type 'market'. "
+    "News panel params: country (any real country name, e.g. 'Nigeria' or 'Japan' - not limited "
+    "to a fixed list) OR continent (one of the allowed continent ids below) - use at most one of "
+    "the two, or omit both for global/world news; plus query, timespan, max. "
+    f"Allowed continent ids: {VALID_CONTINENTS}. "
+    "Market panel params: symbol - a valid ticker from the allowed list below; range; interval. "
+    f"Allowed market symbols: {VALID_SYMBOLS}. Market symbols ARE a fixed list - if the user asks "
+    "for a company/index not in it, omit that market panel rather than inventing a symbol; this "
+    "restriction does not apply to news panels. Give each panel a short display title and a "
+    "one-line rationale."
 )
 
 
@@ -74,13 +78,25 @@ async def _generate_panels(prompt: str, error_feedback: str | None = None) -> li
 
 def _validate_panel(panel: Panel) -> tuple[bool, str | None]:
     if panel.type == PanelType.news:
+        continent = panel.params.get("continent")
+        if continent:
+            resolved_continent = continent if continent in VALID_CONTINENTS else resolve_continent(continent)
+            if resolved_continent is None:
+                return False, f"'{continent}' isn't a recognized continent"
+            panel.params["continent"] = resolved_continent
+            return True, None
         country = panel.params.get("country")
         if country is None:
             return True, None
-        fips = country if country in VALID_COUNTRIES else resolve_country_fips(country)
-        if fips is None:
+        resolved_country = resolve_country_for_news(country)
+        if resolved_country is None:
+            resolved_continent = resolve_continent(country)
+            if resolved_continent:
+                panel.params["country"] = None
+                panel.params["continent"] = resolved_continent
+                return True, None
             return False, f"'{country}' isn't a recognized country"
-        panel.params["country"] = fips
+        panel.params["country"] = resolved_country
         return True, None
     if panel.type == PanelType.market:
         symbol = panel.params.get("symbol")

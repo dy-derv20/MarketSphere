@@ -4,32 +4,20 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import JSONResponse, StreamingResponse
 from google.genai.errors import APIError
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
 
+from app.api.deps import get_current_session
 from app.db.session import get_db
 from app.models.session import ChatMessage
-from app.models.session import Session as SessionModel
 from app.schemas.chat import ChatRequest
 from app.services.analyze_service import analyze_entity
 from app.services.answer_service import stream_answer
 from app.services.build_service import build_workspace_config
 from app.services.classifier_service import classify_intent
-from app.services.entity_resolver import resolve_country_fips
+from app.services.entity_resolver import resolve_continent, resolve_country_for_news
 from app.services.news_service import get_news
 
 router = APIRouter(prefix="/chat", tags=["chat"])
-
-
-async def _get_session_with_history(db: AsyncSession, session_id: UUID) -> SessionModel:
-    result = await db.execute(
-        select(SessionModel).options(selectinload(SessionModel.messages)).where(SessionModel.id == session_id)
-    )
-    session = result.scalar_one_or_none()
-    if session is None:
-        raise HTTPException(status_code=404, detail="Session not found")
-    return session
 
 
 async def _save_turn(db: AsyncSession, session_id: UUID, user_message: str, model_message: str) -> None:
@@ -40,7 +28,7 @@ async def _save_turn(db: AsyncSession, session_id: UUID, user_message: str, mode
 
 @router.post("")
 async def chat(body: ChatRequest, db: AsyncSession = Depends(get_db)):
-    session = await _get_session_with_history(db, body.session_id)
+    session = await get_current_session(body.session_id, db)
     recent_history = [f"{m.role}: {m.content}" for m in session.messages[-10:]]
 
     try:
@@ -81,8 +69,14 @@ async def chat(body: ChatRequest, db: AsyncSession = Depends(get_db)):
         return JSONResponse(result)
 
     # answer - streamed
-    country = resolve_country_fips(classified.entities.countries[0]) if classified.entities.countries else None
-    articles = await get_news(db, country=country, limit=15)
+    country = None
+    continent = None
+    if classified.entities.countries:
+        entity = classified.entities.countries[0]
+        country = resolve_country_for_news(entity)
+        if country is None:
+            continent = resolve_continent(entity)
+    articles = await get_news(db, continent=continent, country=country, limit=15)
     full_text_parts: list[str] = []
 
     async def event_generator():

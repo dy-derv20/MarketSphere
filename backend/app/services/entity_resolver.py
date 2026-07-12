@@ -1,4 +1,17 @@
-from app.services.scope_service import REGIONS
+from app.services.ingestion.geo_tagging import country_to_iso2
+from app.services.scope_service import CONTINENTS, REGIONS
+
+# Demonym/loose-name aliases for continent-level queries ("African markets",
+# "Asian tech stocks"). Tried only after a specific-country match fails, so
+# "Japanese" still resolves to Japan (JA) via COUNTRY_FIPS_LOOKUP, not "asia".
+CONTINENT_ALIASES = {
+    "africa": "africa", "african": "africa",
+    "asia": "asia", "asian": "asia",
+    "europe": "europe", "european": "europe",
+    "north america": "north-america", "north-america": "north-america",
+    "oceania": "oceania", "australasia": "oceania",
+    "south america": "south-america", "south-america": "south-america", "latin america": "south-america",
+}
 
 COUNTRY_FIPS_LOOKUP = {
     "us": "US", "usa": "US", "united states": "US", "america": "US",
@@ -55,6 +68,23 @@ COMPANIES = {
 
 def resolve_country_fips(name_or_code: str) -> str | None:
     return COUNTRY_FIPS_LOOKUP.get(name_or_code.strip().lower())
+
+
+def resolve_continent(name: str) -> str | None:
+    key = name.strip().lower()
+    if key in CONTINENTS:
+        return key
+    return CONTINENT_ALIASES.get(key)
+
+
+def resolve_country_for_news(name_or_code: str) -> str | None:
+    """Broader than resolve_country_fips - covers any of ~200 countries via
+    pycountry, not just the 9 flagship-index ones. News filtering doesn't need
+    a market ticker to exist, unlike resolve_country_fips's original callers."""
+    fips = resolve_country_fips(name_or_code)
+    if fips:
+        return fips
+    return country_to_iso2(name_or_code)
 
 
 def resolve_company(name: str) -> dict | None:

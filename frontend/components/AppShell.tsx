@@ -6,7 +6,6 @@ import FloatingChat from "@/components/chat/FloatingChat";
 import LandingGlobe from "@/components/globe/LandingGlobe";
 import PanelList from "@/components/panel/PanelList";
 import TitleBar from "@/components/TitleBar";
-import { setScopeForContinent } from "@/lib/api/scope";
 import { CONTINENT_TRANSITION_MS } from "@/lib/transitionTiming";
 import { useAppSession } from "@/lib/useAppSession";
 import type { ContinentId, ViewMode } from "@/types/globe";
@@ -14,26 +13,16 @@ import type { ContinentId, ViewMode } from "@/types/globe";
 export default function AppShell() {
   const [viewMode, setViewMode] = useState<ViewMode>("landing");
   const [selectedContinent, setSelectedContinent] = useState<ContinentId | null>(null);
-  const { sessionId } = useAppSession();
+  const { sessionId, initialMessages } = useAppSession();
 
-  const handleContinentSelect = useCallback(
-    (continentId: ContinentId) => {
-      setSelectedContinent(continentId);
-      setViewMode("transition");
-      window.setTimeout(() => setViewMode("dashboard"), CONTINENT_TRANSITION_MS);
-
-      // Fire-and-forget: tracks the user's selection server-side for the
-      // (future) chat/perspective features. Never blocks or delays the
-      // transition/animation — this is purely a side effect on top of the
-      // existing onContinentSelect flow, not a new UI event.
-      if (sessionId) {
-        setScopeForContinent(sessionId, continentId).catch((err) => {
-          console.error("[AppShell] setScope failed:", err);
-        });
-      }
-    },
-    [sessionId],
-  );
+  const handleContinentSelect = useCallback((continentId: ContinentId) => {
+    setSelectedContinent(continentId);
+    setViewMode("transition");
+    window.setTimeout(() => setViewMode("dashboard"), CONTINENT_TRANSITION_MS);
+    // No separate "notify backend" side effect needed anymore: PanelList
+    // fetches GET /api/scope?region=... directly whenever continentId
+    // changes, which is also what drives the Market/News panel content.
+  }, []);
 
   const showDashboardChrome = viewMode !== "landing";
 
@@ -48,7 +37,7 @@ export default function AppShell() {
           {showDashboardChrome && selectedContinent && <PanelList key="panel" continentId={selectedContinent} />}
         </AnimatePresence>
       </div>
-      <FloatingChat sessionId={sessionId} />
+      <FloatingChat sessionId={sessionId} initialMessages={initialMessages} />
     </div>
   );
 }
