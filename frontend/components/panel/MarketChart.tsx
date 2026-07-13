@@ -7,6 +7,10 @@ import type { OhlcvBar } from "@/types/api";
 interface MarketChartProps {
   label: string;
   ohlcv: OhlcvBar[];
+  /** Tailwind height utility for the chart canvas - lets the expanded detail view reuse this component at a larger size. */
+  heightClassName?: string;
+  /** Hides the label row - the expanded detail view already renders the title in its own header. */
+  hideLabel?: boolean;
 }
 
 // Own chart rendered from real /api/market OHLCV via TradingView's
@@ -14,7 +18,7 @@ interface MarketChartProps {
 // TradingView widget (see FRONTEND_MARKET_PANEL.md). Cards stay on the
 // same cream/rounded language as the rest of the panel; colors are tuned
 // for a light card rather than the library's dark-theme defaults.
-export default function MarketChart({ label, ohlcv }: MarketChartProps) {
+export default function MarketChart({ label, ohlcv, heightClassName = "h-[120px]", hideLabel = false }: MarketChartProps) {
   const containerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -55,13 +59,13 @@ export default function MarketChart({ label, ohlcv }: MarketChartProps) {
 
   return (
     <div className="overflow-hidden rounded-2xl bg-[#f4f2ea] px-3 pb-1 pt-2.5">
-      <div className="truncate px-1 text-xs font-medium text-[#8a8779]">{label}</div>
+      {!hideLabel && <div className="truncate px-1 text-xs font-medium text-[#8a8779]">{label}</div>}
       {ohlcv.length === 0 ? (
-        <div className="flex h-[120px] items-center justify-center px-1 text-[11px] text-[#8a8779]/70">
+        <div className={`flex items-center justify-center px-1 text-[11px] text-[#8a8779]/70 ${heightClassName}`}>
           Chart data unavailable
         </div>
       ) : (
-        <div ref={containerRef} className="h-[120px] w-full" />
+        <div ref={containerRef} className={`w-full ${heightClassName}`} />
       )}
     </div>
   );

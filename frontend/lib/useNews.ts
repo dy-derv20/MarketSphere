@@ -58,6 +58,13 @@ export function useNews(newsPanels: Panel[]): NewsState {
             headline: a.title,
             source: a.domain ?? a.source,
             publishedAt: parseGdeltTimestamp(a.published_at),
+            // Already present on the fetched response, just not previously
+            // surfaced past this adapter - needed for the expanded reading
+            // view (image, body preview, "open original article").
+            url: a.url,
+            imageUrl: a.image_url,
+            summary: a.summary,
+            body: a.body,
           }))
           .sort((a, b) => (a.publishedAt < b.publishedAt ? 1 : a.publishedAt > b.publishedAt ? -1 : 0))
           .slice(0, MAX_DISPLAYED_ARTICLES);
